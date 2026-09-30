@@ -26,14 +26,10 @@ def get_chart_data():
 # App layout
 # --------------------------------------------------
 st.title("HACKATON")
-st.title("Hello World!")
 
 with st.sidebar:
     st.header("About app")
     st.write("suck my fat one")
-    st.write("This is my first app.")
-
-st.header("This is a header with a divider")
 
 st.header("Interactive dashboard")
 st.markdown("This is created using `st.markdown`.")
