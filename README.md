@@ -36,8 +36,8 @@ The score consists of five factors with fixed weights (100 points in total). Thi
 
 **Rating**
 
-- 🟢 **Reliable**: score ≥ 75
-- 🟠 **Be careful**: score 50 to 74
+- 🟢 **Reliable**: score ≥ 60
+- 🟠 **Be careful**: score 50 to 59
 - 🔴 **Do not trust**: score < 50
 
 
