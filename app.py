@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 st.set_page_config(
     page_title="HACKATON",
@@ -15,17 +14,7 @@ st.set_page_config(
 @st.cache_data
 def get_chart_data():
     rng = np.random.default_rng(42)
-    return pd.DataFrame(np.random.randn(10, 3), columns=["A", "B", "C"])
-
-
-def render_surprise_image():
-    components.html(
-        <div id="b" style="font-size:80px; cursor:pointer; text-align:center; user-select:none;">🎈</div>
-        <div id="imageContainer"></div>
-        <script>
-        const b = document.getElementById("b");
-        const container = document.getElementById("imageContainer");
-    )
+    return pd.DataFrame(rng.normal(size=(10, 3)), columns=["A", "B", "C"])
 
 
 # --------------------------------------------------
@@ -63,8 +52,7 @@ with col2:
 # Random chart
 # -------------------------
 st.subheader("Area chart")
-chart_data = get_chart_data()
-st.area_chart(chart_data)
+st.area_chart(get_chart_data())
 
 # -------------------------
 # Surprise button
@@ -77,6 +65,3 @@ if st.button("🎈 Surprise me!"):
     if st.session_state.surprise_open:
         st.balloons()
         st.success("Surprise activated!")
-
-if st.session_state.surprise_open:
-    render_surprise_image()
