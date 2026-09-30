@@ -224,11 +224,15 @@ def bereken_score(d, uitsluiten_id=None):
         f["Actualiteit"] = 0.3
 
     # Auteur: gebaseerd op aantal betrouwbare documenten van deze auteur in de database
+    # New authors without a track record receive 0 points to prevent score manipulation
     if not d["auteur"].strip():
         f["Auteur"] = 0.0
     else:
         n = aantal_betrouwbaar(d["auteur"], uitsluiten_id)
-        f["Auteur"] = 0.2 + 0.8 * min(1, n / 5)  # nieuwe auteur 20%, vanaf 5 betrouwbare docs 100%
+        if n == 0:
+            f["Auteur"] = 0.0  # nieuwe auteur zonder track record: 0%
+        else:
+            f["Auteur"] = min(1.0, n / 5)  # vanaf 1 betrouwbaar doc: 20%, vanaf 5: 100%
 
     # AI-percentage: onbekend (None) = factor telt niet mee
     if d["ai"] is not None:
@@ -371,30 +375,20 @@ if pagina == "upload":
         with st.expander(f"📄 {f.name}", expanded=True):
             c1, c2 = st.columns(2)
             onderwerp = c1.text_input("Onderwerp", key=f"onderwerp_{i}_{f.name}")
-            auteur = c2.text_input("Naam auteur", key=f"auteur_{i}_{f.name}")
+            # Extract metadata early to show detected author (read-only)
+            data = f.getvalue()
+            datum, meta_auteur = lees_metadata(f.name, data)
+            if meta_auteur and meta_auteur.strip():
+                c2.text_input("Auteur (uit bestandsmetadata)", value=meta_auteur, disabled=True, key=f"auteur_{i}_{f.name}")
+            else:
+                c2.caption("⚠️ Geen auteur gevonden in bestandsmetadata")
             c3, c4 = st.columns(2)
             taal = c3.selectbox("Taal", TALEN, key=f"taal_{i}_{f.name}")
             land = c4.selectbox("Land", LANDEN, key=f"land_{i}_{f.name}")
-            ai_onbekend = st.checkbox(
-                "❓ Ik weet het AI-percentage niet",
-                value=True,
-                key=f"ai_onb_{i}_{f.name}",
-                help="Aangevinkt: het AI-gehalte telt niet mee in de score. "
-                     "Vink uit om het zelf in te vullen.",
-            )
-            if ai_onbekend:
-                ai = None
-                st.caption("ℹ️ Het AI-gehalte telt niet mee in de score.")
-            else:
-                niveaus = list(AI_NIVEAUS)
-                ai_label = st.select_slider(
-                    "Hoeveel van dit document is AI-gegenereerd?",
-                    options=niveaus,
-                    value=niveaus[0],
-                    key=f"ai_{i}_{f.name}",
-                )
-                ai = AI_NIVEAUS[ai_label]
-            invoer.append((f, onderwerp, auteur, taal, land, ai))
+            # AI percentage is always unknown - cannot be user-specified to prevent score manipulation
+            ai = None
+            st.caption("ℹ️ AI-gehalte wordt niet meegerekend in de score (automatische detectie nog niet beschikbaar).")
+            invoer.append((f, onderwerp, meta_auteur, taal, land, ai, datum, data))
 
     if invoer:
         if st.button("➡️ Doorsturen naar beoordeling", type="primary"):
@@ -403,19 +397,19 @@ if pagina == "upload":
                 st.error("Vul het onderwerp in voor: " + ", ".join(ontbreekt))
             else:
                 # Validate upload quota before adding to queue
-                new_files_data = [f.getvalue() for f, *_ in invoer]
+                new_files_data = [data for f, *_, data in invoer]
                 is_valid, error_msg = check_upload_quota(new_files_data)
                 
                 if not is_valid:
                     st.error(f"❌ Upload geweigerd: {error_msg}")
                 else:
-                    for f, onderwerp, auteur, taal, land, ai in invoer:
-                        data = f.getvalue()
-                        datum, meta_auteur = lees_metadata(f.name, data)
+                    for f, onderwerp, auteur, taal, land, ai, datum, data in invoer:
+                        # Auteur and AI are now derived from metadata/system, not user input
+                        # This prevents score manipulation via forged author names or AI percentages
                         st.session_state.wachtrij.append({
-                            "bestandsnaam": f.name, "onderwerp": onderwerp.strip(), "auteur": auteur,
+                            "bestandsnaam": f.name, "onderwerp": onderwerp.strip(), "auteur": auteur or "",
                             "taal": taal, "land": land, "ai": ai, "datum": datum,
-                            "meta_auteur": meta_auteur, "inhoud": data,
+                            "meta_auteur": auteur, "inhoud": data,
                             "upload": datetime.now(),
                         })
                     st.session_state.up_nr += 1  # uploader leegmaken
