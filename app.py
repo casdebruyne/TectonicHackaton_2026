@@ -32,8 +32,6 @@ with st.sidebar:
     st.write("suck my fat one")
 
 st.header("Interactive dashboard")
-st.markdown("This is created using `st.markdown`.")
-st.markdown("This is created using st.markdown")
 
 # -------------------------
 # Slider and metric
