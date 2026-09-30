@@ -34,6 +34,20 @@ MIME = {
 TALEN = ["Nederlands", "Frans", "Engels", "Duits", "Andere"]
 LANDEN = ["België", "Nederland", "Frankrijk", "Duitsland", "Verenigd Koninkrijk", "Andere"]
 
+# Niveaus voor het AI-gehalte. None = onbekend -> telt niet mee in de score.
+AI_NIVEAUS = {
+    "❓ Weet ik niet": None,
+    "0% · Geen AI": 0,
+    "25% · Weinig AI": 25,
+    "50% · De helft": 50,
+    "75% · Grotendeels AI": 75,
+    "100% · Volledig AI": 100,
+}
+
+
+def ai_tekst(ai):
+    return "Onbekend" if ai is None or pd.isna(ai) else f"{int(ai)}%"
+
 
 # ---------------------------------------------------------------
 # Stijl
@@ -154,11 +168,16 @@ def bereken_score(d, uitsluiten_id=None):
         n = aantal_betrouwbaar(d["auteur"], uitsluiten_id)
         f["Auteur"] = 0.2 + 0.8 * min(1, n / 5)  # nieuwe auteur 20%, vanaf 5 betrouwbare docs 100%
 
-    f["AI-percentage"] = 1 - d["ai"] / 100
+    # AI-percentage: onbekend (None) = factor telt niet mee
+    if d["ai"] is not None:
+        f["AI-percentage"] = 1 - d["ai"] / 100
+
     f["Metadata aanwezig"] = 1.0 if d["datum"] else 0.0
     f["Bestandstype"] = TYPE_SCORE.get(d["bestandsnaam"].rsplit(".", 1)[-1].lower(), 0.3)
 
-    punten = {k: round(f[k] * GEWICHTEN[k], 1) for k in f}
+    # Alleen de factoren die meetellen; de score wordt daarna op 100 gebracht
+    max_totaal = sum(GEWICHTEN[k] for k in f)
+    punten = {k: round(f[k] * GEWICHTEN[k] * 100 / max_totaal, 1) for k in f}
     score = max(1, min(100, round(sum(punten.values()))))
     return score, punten
 
@@ -187,7 +206,7 @@ def herbereken_alles(max_rondes=5):
             d = {
                 "bestandsnaam": naam,
                 "auteur": auteur or "",
-                "ai": ai or 0,
+                "ai": ai,  # None blijft None (onbekend)
                 "datum": datetime.strptime(datum, "%Y-%m-%d") if datum else None,
             }
             score, punten = bereken_score(d, doc_id)
@@ -293,7 +312,18 @@ if pagina == "upload":
             c3, c4 = st.columns(2)
             taal = c3.selectbox("Taal", TALEN, key=f"taal_{i}_{f.name}")
             land = c4.selectbox("Land", LANDEN, key=f"land_{i}_{f.name}")
-            ai = st.slider("Percentage AI-gegenereerd", 0, 100, 0, key=f"ai_{i}_{f.name}")
+            niveaus = list(AI_NIVEAUS)
+            ai_label = st.select_slider(
+                "Hoeveel van dit document is AI-gegenereerd?",
+                options=niveaus,
+                value=niveaus[0],
+                key=f"ai_{i}_{f.name}",
+                help="Laat het op 'Weet ik niet' staan als je het niet zeker weet. "
+                     "Dan telt dit onderdeel niet mee in de betrouwbaarheidsscore.",
+            )
+            ai = AI_NIVEAUS[ai_label]
+            if ai is None:
+                st.caption("ℹ️ Onbekend: het AI-gehalte telt niet mee in de score.")
             invoer.append((f, onderwerp, auteur, taal, land, ai))
 
     if invoer:
@@ -337,7 +367,7 @@ elif pagina == "beoordeel":
                 "Auteur": d["auteur"] or "⚠️ onbekend",
                 "Betrouwbare docs auteur": aantal_betrouwbaar(d["auteur"]),
                 "Bestandsdatum": d["datum"].strftime("%Y-%m-%d") if d["datum"] else "Onbekend",
-                "AI %": d["ai"],
+                "AI %": ai_tekst(d["ai"]),
                 "Score": score,
                 "Rating": rating(score),
             }
@@ -354,6 +384,8 @@ elif pagina == "beoordeel":
         c1, c2 = st.columns([1, 2])
         c1.metric("Betrouwbaarheid", f"{score} / 100")
         c1.write(rating(score))
+        if d["ai"] is None:
+            c1.caption("ℹ️ AI-gehalte onbekend: telt niet mee, de andere factoren wegen daardoor zwaarder.")
         c2.bar_chart(pd.Series(punten, name="Punten"))
 
         b1, b2 = st.columns(2)
@@ -414,15 +446,15 @@ else:
             res = res[res["land"].isin(landen)]
         res = res[res["score"] >= min_score].sort_values("score", ascending=False).reset_index(drop=True)
         res["Rating"] = res["score"].apply(rating)
+        res["AI %"] = res["ai_percentage"].apply(ai_tekst)
 
         st.write(f"**{len(res)}** resultaat/resultaten  ·  👆 klik op een rij om het document te openen")
         event = st.dataframe(
-            res[["bestandsnaam", "onderwerp", "auteur", "taal", "land", "ai_percentage", "score", "Rating"]],
+            res[["bestandsnaam", "onderwerp", "auteur", "taal", "land", "AI %", "score", "Rating"]],
             hide_index=True, use_container_width=True,
             on_select="rerun", selection_mode="single-row", key="zoektabel",
             column_config={
                 "score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%d"),
-                "ai_percentage": "AI %",
             },
         )
 
@@ -436,6 +468,7 @@ else:
             k1.write(r["Rating"])
             k1.write(f"**Onderwerp:** {r['onderwerp']}")
             k1.write(f"**Auteur:** {r['auteur'] or '⚠️ onbekend'}")
+            k1.write(f"**AI-gehalte:** {r['AI %']}")
             k1.write(f"**Bestandsdatum:** {r['bestandsdatum'] or 'onbekend'}")
             k2.caption("Zo is de score opgebouwd")
             k2.bar_chart(pd.Series(json.loads(r["uitleg"]), name="Punten"))
