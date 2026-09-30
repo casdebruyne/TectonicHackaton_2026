@@ -93,14 +93,14 @@ def lees_inhoud(doc_id):
     return rij[0] if rij else None
 
 
-def aantal_betrouwbaar(auteur):
-    """Aantal documenten van deze auteur in de database met score >= DREMPEL."""
-    if not auteur.strip():
+def aantal_betrouwbaar(auteur, uitsluiten_id=None):
+    """Aantal documenten van deze auteur met score >= DREMPEL (eigen document uitgezonderd)."""
+    if not auteur or not auteur.strip():
         return 0
     con = get_con()
     n = con.execute(
-        "SELECT COUNT(*) FROM documenten WHERE lower(trim(auteur)) = ? AND score >= ?",
-        (auteur.strip().lower(), DREMPEL),
+        "SELECT COUNT(*) FROM documenten WHERE lower(trim(auteur)) = ? AND score >= ? AND id != ?",
+        (auteur.strip().lower(), DREMPEL, uitsluiten_id if uitsluiten_id is not None else -1),
     ).fetchone()[0]
     con.close()
     return n
@@ -137,7 +137,7 @@ def lees_metadata(naam, data):
 # ---------------------------------------------------------------
 # Score (1-100)
 # ---------------------------------------------------------------
-def bereken_score(d):
+def bereken_score(d, uitsluiten_id=None):
     f = {}
 
     # Actualiteit: daalt traag (halveert per 5 jaar) en zakt nooit onder 40%
@@ -151,7 +151,7 @@ def bereken_score(d):
     if not d["auteur"].strip():
         f["Auteur"] = 0.0
     else:
-        n = aantal_betrouwbaar(d["auteur"])
+        n = aantal_betrouwbaar(d["auteur"], uitsluiten_id)
         f["Auteur"] = 0.2 + 0.8 * min(1, n / 5)  # nieuwe auteur 20%, vanaf 5 betrouwbare docs 100%
 
     f["AI-percentage"] = 1 - d["ai"] / 100
@@ -169,6 +169,40 @@ def rating(score):
     if score >= 50:
         return "🟠 Let op"
     return "🔴 Niet vertrouwen"
+
+
+def herbereken_alles(max_rondes=5):
+    """Berekent alle opgeslagen scores opnieuw, tot er niets meer verandert."""
+    con = get_con()
+    rijen = con.execute(
+        "SELECT id, bestandsnaam, auteur, ai_percentage, bestandsdatum, score FROM documenten"
+    ).fetchall()
+    con.close()
+
+    huidige = {r[0]: r[5] for r in rijen}
+
+    for _ in range(max_rondes):
+        veranderd = False
+        for doc_id, naam, auteur, ai, datum, _oud in rijen:
+            d = {
+                "bestandsnaam": naam,
+                "auteur": auteur or "",
+                "ai": ai or 0,
+                "datum": datetime.strptime(datum, "%Y-%m-%d") if datum else None,
+            }
+            score, punten = bereken_score(d, doc_id)
+            con = get_con()
+            con.execute(
+                "UPDATE documenten SET score=?, uitleg=? WHERE id=?",
+                (score, json.dumps(punten), doc_id),
+            )
+            con.commit()
+            con.close()
+            if score != huidige[doc_id]:
+                huidige[doc_id] = score
+                veranderd = True
+        if not veranderd:
+            break
 
 
 # ---------------------------------------------------------------
@@ -213,7 +247,7 @@ with st.sidebar:
 
     menu = [
         ("upload", "📤", "1 · Uploaden"),
-        ("beoordeel", "🧮", f"2 · Beoordelen" + (f"  ({n_wacht})" if n_wacht else "")),
+        ("beoordeel", "🧮", "2 · Beoordelen" + (f"  ({n_wacht})" if n_wacht else "")),
         ("zoek", "🔎", "3 · Zoeken"),
     ]
     for sleutel, icoon, label in menu:
@@ -243,9 +277,6 @@ def ga_naar(p):
 if pagina == "upload":
     st.title("📤 Documenten uploaden")
     st.write("Upload documenten en vul per document de gegevens in.")
-
-    if st.session_state.get("flash"):
-        st.success(st.session_state.pop("flash"))
 
     bestanden = st.file_uploader(
         "Kies of drop hier je bestanden (PDF, Word, Excel, afbeeldingen)",
@@ -343,6 +374,7 @@ elif pagina == "beoordeel":
                 )
             con.commit()
             con.close()
+            herbereken_alles()  # oudere documenten van dezelfde auteur gaan mee omhoog/omlaag
             st.session_state.wachtrij = []
             st.session_state.pagina = "zoek"
             st.balloons()
@@ -416,8 +448,13 @@ else:
         else:
             st.info("Selecteer een rij om de score-uitleg te zien en het document te openen.")
 
-        st.download_button(
+        b1, b2 = st.columns(2)
+        if b1.button("🔄 Alle scores herberekenen", use_container_width=True):
+            herbereken_alles()
+            st.rerun()
+        b2.download_button(
             "⬇️ Download database als CSV",
             df.to_csv(index=False).encode("utf-8"),
             file_name="kennisbank.csv", mime="text/csv",
+            use_container_width=True,
         )
