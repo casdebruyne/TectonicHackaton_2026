@@ -1,4 +1,4 @@
-#SD WORX APPLICATION
+# SD WORX APPLICATION
 
 **Weet wat je kunt vertrouwen, voordat je het gebruikt.**
 Een Streamlit-app die documenten beoordeelt op betrouwbaarheid, met een transparante score van 1 tot 100, en ze opslaat in een doorzoekbare kennisbank.
