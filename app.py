@@ -55,6 +55,28 @@ def ai_tekst(ai):
     return "Onbekend" if ai is None or pd.isna(ai) else f"{int(ai)}%"
 
 
+def sanitize_csv_formula(value):
+    """
+    Neutralizes potential spreadsheet formula injection by prefixing
+    formula-leading characters with a single quote. This prevents
+    interpretation as a formula when the CSV is opened in spreadsheet software.
+    
+    Formula markers: = + - @ (and tab/carriage return which are less common)
+    """
+    if not value or not isinstance(value, str):
+        return value
+    
+    # Strip whitespace first
+    value = value.strip()
+    
+    # Check if the value starts with a formula marker
+    if value and value[0] in ('=', '+', '-', '@', '\t', '\r'):
+        # Prefix with single quote to neutralize the formula
+        return "'" + value
+    
+    return value
+
+
 # ---------------------------------------------------------------
 # Stijl
 # ---------------------------------------------------------------
@@ -406,8 +428,11 @@ if pagina == "upload":
                     for f, onderwerp, auteur, taal, land, ai, datum, data in invoer:
                         # Auteur and AI are now derived from metadata/system, not user input
                         # This prevents score manipulation via forged author names or AI percentages
+                        # Sanitize user-controlled fields to prevent CSV formula injection
                         st.session_state.wachtrij.append({
-                            "bestandsnaam": f.name, "onderwerp": onderwerp.strip(), "auteur": auteur or "",
+                            "bestandsnaam": sanitize_csv_formula(f.name), 
+                            "onderwerp": sanitize_csv_formula(onderwerp.strip()), 
+                            "auteur": sanitize_csv_formula(auteur or ""),
                             "taal": taal, "land": land, "ai": ai, "datum": datum,
                             "meta_auteur": auteur, "inhoud": data,
                             "upload": datetime.now(),
@@ -568,9 +593,17 @@ else:
         if b1.button("🔄 Alle scores herberekenen", use_container_width=True):
             herbereken_alles()
             st.rerun()
+        
+        # Sanitize CSV export to prevent formula injection
+        # Apply sanitization to user-controlled text fields that could contain formulas
+        df_export = df.copy()
+        for col in ['bestandsnaam', 'onderwerp', 'auteur']:
+            if col in df_export.columns:
+                df_export[col] = df_export[col].apply(sanitize_csv_formula)
+        
         b2.download_button(
             "⬇️ Download database als CSV",
-            df.to_csv(index=False).encode("utf-8"),
+            df_export.to_csv(index=False).encode("utf-8"),
             file_name="kennisbank.csv", mime="text/csv",
             use_container_width=True,
         )
