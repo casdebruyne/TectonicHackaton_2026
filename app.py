@@ -1,206 +1,311 @@
-import numpy as np
-import pandas as pd
-import streamlit as st
-import pandas as pd
-import numpy as np
+import io
+import json
+import sqlite3
 from datetime import datetime
+
 import docx
 import openpyxl
-from PIL import Image, ExifTags
+import pandas as pd
 import pypdf
+import streamlit as st
+from PIL import ExifTags, Image
 
-st.set_page_config(
-    page_title="Bestanden Vergelijker", page_icon="📁", layout="wide"
-)
+st.set_page_config(page_title="Kennis Betrouwbaarheid", page_icon="🛡️", layout="wide")
 
-st.title("📁 Bestanden Vergelijken op Laatste Bewerkingsdatum")
-st.write(
-    "Upload documenten (PDF, Word, Excel, Afbeeldingen) om de echte interne bewerkingsdatum te vergelijken."
-)
+DB = "kennis.db"
 
-
-def get_file_modification_date(uploaded_file):
-    """Probeert de interne 'last modified' datum uit het bestand te lezen."""
-    file_name = uploaded_file.name.lower()
-
-    try:
-        # 1. Voor PDF bestanden
-        if file_name.endswith(".pdf"):
-            reader = pypdf.PdfReader(uploaded_file)
-            meta = reader.metadata
-            if meta and meta.modification_date:
-                return meta.modification_date.replace(tzinfo=None)
-
-        # 2. Voor Word (.docx) bestanden
-        elif file_name.endswith(".docx"):
-            doc = docx.Document(uploaded_file)
-            prop = doc.core_properties
-            if prop.modified:
-                return prop.modified
-
-        # 3. Voor Excel (.xlsx) bestanden
-        elif file_name.endswith(".xlsx"):
-            wb = openpyxl.load_workbook(uploaded_file, read_only=True)
-            if wb.properties and wb.properties.modified:
-                return wb.properties.modified
-
-        # 4. Voor Afbeeldingen (JPG/PNG - EXIF data)
-        elif file_name.endswith((".jpg", ".jpeg", ".png")):
-            img = Image.open(uploaded_file)
-            exif = img._getexif()
-            if exif:
-                for tag_id, value in exif.items():
-                    tag = ExifTags.TAGS.get(tag_id, tag_id)
-                    if tag in ["DateTimeOriginal", "DateTime"]:
-                        return datetime.strptime(value, "%Y:%m:%d %H:%M:%S")
-
-    except Exception as e:
-        pass
-
-    # Fallback als er geen interne metadata gevonden kan worden
-    return None
+# Maximaal aantal punten per factor (samen 100) -> zo is de score uitlegbaar
+GEWICHTEN = {
+    "Actualiteit": 30,
+    "Auteur": 20,
+    "AI-percentage": 25,
+    "Metadata aanwezig": 15,
+    "Bestandstype": 10,
+}
+TYPE_SCORE = {"pdf": 1.0, "docx": 0.9, "xlsx": 0.8, "jpg": 0.4, "jpeg": 0.4, "png": 0.4}
+TALEN = ["Nederlands", "Frans", "Engels", "Duits", "Andere"]
+LANDEN = ["België", "Nederland", "Frankrijk", "Duitsland", "Verenigd Koninkrijk", "Andere"]
 
 
-uploaded_files = st.file_uploader(
-    "Kies of drop hier je bestanden", accept_multiple_files=True
-)
-
-if uploaded_files:
-    file_data = []
-
-    for uploaded_file in uploaded_files:
-        file_size_kb = round(uploaded_file.size / 1024, 2)
-
-        # Probeer interne datum op te halen
-        mod_date = get_file_modification_date(uploaded_file)
-
-        if mod_date:
-            last_mod_str = mod_date.strftime("%Y-%m-%d %H:%M:%S")
-            is_fallback = False
-        else:
-            mod_date = datetime.now()
-            last_mod_str = "Geen metadata (Uploadtijd gebruikt)"
-            is_fallback = True
-
-        file_data.append(
-            {
-                "Bestandsnaam": uploaded_file.name,
-                "Grootte (KB)": file_size_kb,
-                "Laatst Gewijzigd": last_mod_str,
-                "_datetime": mod_date,
-                "_is_fallback": is_fallback,
-            }
-        )
-
-    df = pd.DataFrame(file_data)
-    df = df.sort_values(by="_datetime", ascending=False).reset_index(drop=True)
-
-    # Toon meest recente bestand
-    valid_dates = df[df["_is_fallback"] == False]
-    if not valid_dates.empty:
-        most_recent = valid_dates.iloc[0]
-        st.success(
-            f"🏆 **Meest recente bestand:** `{most_recent['Bestandsnaam']}` (Bewerkt op: {most_recent['Laatst Gewijzigd']})"
-        )
-    else:
-        st.warning(
-            "⚠️️ Kon in geen van de bestanden interne bewerkingsdatum-metadata vinden."
-        )
-
-    df_display = df.drop(columns=["_datetime", "_is_fallback"])
-    st.subheader("Overzicht van alle bestanden")
-    st.dataframe(df_display, use_container_width=True)
-
-# =====================================================
-# BETROUWBAARHEIDSSCORE
-# =====================================================
-from datetime import date
-
-st.divider()
-st.title("🛡️ Betrouwbaarheidsscore van kennis")
-st.caption("Elke score is uitlegbaar: je ziet per document waarom het dit cijfer krijgt.")
-
-docs = pd.DataFrame([
-    ["Verlofbeleid 2026",   "Verlofdagen", "25 dagen",    "Beleid",      "Goedgekeurd", "HR Team",   date(2026, 1, 10)],
-    ["HR Handleiding",      "Verlofdagen", "25 dagen",    "Handleiding", "Goedgekeurd", "An Peeters", date(2025, 6, 2)],
-    ["Oude intranetpagina", "Verlofdagen", "20 dagen",    "Handleiding", "Onbekend",    None,         date(2022, 3, 15)],
-    ["Teams-gesprek Marc",  "Verlofdagen", "24 dagen",    "Teams-chat",  "Onbekend",    "Marc D.",    date(2026, 8, 20)],
-    ["Payroll procedure",   "Loonbrief",   "Vóór de 25e", "Beleid",      "Goedgekeurd", "Payroll",    date(2026, 3, 1)],
-    ["E-mail klant",        "Loonbrief",   "Vóór de 28e", "E-mail",      "Concept",     "Sara V.",    date(2025, 11, 5)],
-], columns=["Document", "Onderwerp", "Antwoord", "Brontype", "Status", "Eigenaar", "Datum"])
-
-with st.sidebar:
-    st.header("⚖️ Gewichten")
-    w = {
-        "Actualiteit": st.slider("Actualiteit", 0, 10, 3),
-        "Eigenaar":    st.slider("Eigenaar bekend", 0, 10, 2),
-        "Status":      st.slider("Goedkeuring", 0, 10, 3),
-        "Brontype":    st.slider("Brontype", 0, 10, 2),
-        "Consensus":   st.slider("Consensus met andere bronnen", 0, 10, 4),
-    }
-    totaal = sum(w.values()) or 1
-
-STATUS = {"Goedgekeurd": 1.0, "Concept": 0.4, "Onbekend": 0.0}
-BRON = {"Beleid": 1.0, "Handleiding": 0.8, "E-mail": 0.4, "Teams-chat": 0.3}
-
-
-def factoren(rij):
-    leeftijd = (date.today() - rij["Datum"]).days
-    anderen = docs[(docs["Onderwerp"] == rij["Onderwerp"]) & (docs["Document"] != rij["Document"])]
-    consensus = (anderen["Antwoord"] == rij["Antwoord"]).mean() if len(anderen) else 0.5
-    return {
-        "Actualiteit": max(0, 1 - leeftijd / 730),
-        "Eigenaar": 1.0 if rij["Eigenaar"] else 0.0,
-        "Status": STATUS[rij["Status"]],
-        "Brontype": BRON[rij["Brontype"]],
-        "Consensus": consensus,
-    }
-
-
-def bereken(rij):
-    f = factoren(rij)
-    bijdrage = {k: f[k] * w[k] / totaal * 100 for k in f}
-    return sum(bijdrage.values()), bijdrage
-
-
-docs["Score"] = docs.apply(lambda r: round(bereken(r)[0]), axis=1)
-docs["Rating"] = docs["Score"].apply(
-    lambda s: "🟢 Betrouwbaar" if s >= 75 else ("🟠 Let op" if s >= 50 else "🔴 Niet vertrouwen")
-)
-
-st.subheader("📋 Overzicht")
-st.dataframe(
-    docs.sort_values("Score", ascending=False)[["Document", "Onderwerp", "Antwoord", "Score", "Rating"]],
-    use_container_width=True, hide_index=True,
-    column_config={"Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%d")},
-)
-
-st.subheader("🔍 Waarom deze score?")
-keuze = st.selectbox("Kies een document", docs["Document"])
-rij = docs[docs["Document"] == keuze].iloc[0]
-score, bijdrage = bereken(rij)
-
-c1, c2 = st.columns([1, 2])
-with c1:
-    st.metric("Betrouwbaarheid", f"{round(score)} / 100")
-    st.write(rij["Rating"])
-    st.write(f"**Eigenaar:** {rij['Eigenaar'] or '⚠️ onbekend'}")
-    st.write(f"**Datum:** {rij['Datum']}")
-    st.write(f"**Status:** {rij['Status']}")
-with c2:
-    st.bar_chart(pd.Series(bijdrage, name="Punten"))
-
-zelfde = docs[docs["Onderwerp"] == rij["Onderwerp"]]
-if zelfde["Antwoord"].nunique() > 1:
-    st.warning(f"⚠️ Bronnen spreken elkaar tegen over **{rij['Onderwerp']}**:")
-    st.dataframe(
-        zelfde[["Document", "Antwoord", "Datum", "Score"]].sort_values("Score", ascending=False),
-        hide_index=True, use_container_width=True,
+# ---------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------
+def get_con():
+    con = sqlite3.connect(DB)
+    con.execute(
+        """CREATE TABLE IF NOT EXISTS documenten (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bestandsnaam TEXT, onderwerp TEXT, taal TEXT, auteur TEXT, land TEXT,
+            ai_percentage INTEGER, bestandsdatum TEXT, toegevoegd_op TEXT,
+            score INTEGER, uitleg TEXT)"""
     )
-    beste = zelfde.sort_values("Score", ascending=False).iloc[0]
-    st.success(f"✅ Aanbevolen bron: **{beste['Document']}** ({beste['Antwoord']}, score {beste['Score']})")
-else:
-    st.success("Alle bronnen zijn het eens over dit onderwerp.")
+    return con
 
-if score < 50:
-    st.error(f"Lage betrouwbaarheid. Vraag het aan: **{rij['Eigenaar'] or 'de afdeling HR'}**")
+
+def lees_database():
+    con = get_con()
+    df = pd.read_sql("SELECT * FROM documenten ORDER BY score DESC", con)
+    con.close()
+    return df
+
+
+# ---------------------------------------------------------------
+# Metadata uit het bestand zelf
+# ---------------------------------------------------------------
+def lees_metadata(naam, data):
+    """Geeft (datum, auteur) uit het bestand zelf, of (None, None)."""
+    naam = naam.lower()
+    try:
+        if naam.endswith(".pdf"):
+            m = pypdf.PdfReader(io.BytesIO(data)).metadata
+            if m:
+                d = m.modification_date
+                return (d.replace(tzinfo=None) if d else None), m.author
+        elif naam.endswith(".docx"):
+            p = docx.Document(io.BytesIO(data)).core_properties
+            return p.modified, (p.last_modified_by or p.author)
+        elif naam.endswith(".xlsx"):
+            p = openpyxl.load_workbook(io.BytesIO(data), read_only=True).properties
+            return p.modified, (p.lastModifiedBy or p.creator)
+        elif naam.endswith((".jpg", ".jpeg", ".png")):
+            exif = Image.open(io.BytesIO(data))._getexif()
+            if exif:
+                for tag_id, waarde in exif.items():
+                    if ExifTags.TAGS.get(tag_id) in ("DateTimeOriginal", "DateTime"):
+                        return datetime.strptime(waarde, "%Y:%m:%d %H:%M:%S"), None
+    except Exception:
+        pass
+    return None, None
+
+
+# ---------------------------------------------------------------
+# Score (1-100), elke factor is zichtbaar
+# ---------------------------------------------------------------
+def bereken_score(d):
+    f = {}
+    if d["datum"]:
+        leeftijd = (datetime.now() - d["datum"]).days
+        f["Actualiteit"] = max(0, 1 - leeftijd / 1095)  # na 3 jaar = 0
+    else:
+        f["Actualiteit"] = 0.2  # onbekend = laag
+
+    if not d["auteur"].strip():
+        f["Auteur"] = 0.0
+    elif d["meta_auteur"] and d["meta_auteur"].strip().lower() == d["auteur"].strip().lower():
+        f["Auteur"] = 1.0  # naam komt overeen met het bestand zelf
+    else:
+        f["Auteur"] = 0.6  # ingevuld maar niet te controleren
+
+    f["AI-percentage"] = 1 - d["ai"] / 100
+    f["Metadata aanwezig"] = 1.0 if d["datum"] else 0.0
+    f["Bestandstype"] = TYPE_SCORE.get(d["bestandsnaam"].rsplit(".", 1)[-1].lower(), 0.3)
+
+    punten = {k: round(f[k] * GEWICHTEN[k], 1) for k in f}
+    score = max(1, min(100, round(sum(punten.values()))))
+    return score, punten
+
+
+def rating(score):
+    if score >= 75:
+        return "🟢 Betrouwbaar"
+    if score >= 50:
+        return "🟠 Let op"
+    return "🔴 Niet vertrouwen"
+
+
+# ---------------------------------------------------------------
+# Navigatie
+# ---------------------------------------------------------------
+st.sidebar.title("🛡️ Kennis Betrouwbaarheid")
+pagina = st.sidebar.radio(
+    "Pagina",
+    ["1️⃣ Uploaden", "2️⃣ Beoordelen & opslaan", "3️⃣ Zoeken"],
+    key="pagina",
+)
+if "wachtrij" not in st.session_state:
+    st.session_state.wachtrij = []
+
+
+# ===============================================================
+# PAGINA 1: Uploaden + gegevens invullen
+# ===============================================================
+if pagina.startswith("1"):
+    st.title("📤 Documenten uploaden")
+    st.write("Upload documenten en vul per document de gegevens in.")
+
+    bestanden = st.file_uploader(
+        "Kies of drop hier je bestanden (PDF, Word, Excel, afbeeldingen)",
+        accept_multiple_files=True,
+    )
+
+    invoer = []
+    for i, f in enumerate(bestanden or []):
+        with st.expander(f"📄 {f.name}", expanded=True):
+            c1, c2 = st.columns(2)
+            onderwerp = c1.text_input("Onderwerp", key=f"onderwerp_{i}_{f.name}")
+            auteur = c2.text_input("Naam auteur", key=f"auteur_{i}_{f.name}")
+            c3, c4 = st.columns(2)
+            taal = c3.selectbox("Taal", TALEN, key=f"taal_{i}_{f.name}")
+            land = c4.selectbox("Land", LANDEN, key=f"land_{i}_{f.name}")
+            ai = st.slider("Percentage AI-gegenereerd", 0, 100, 0, key=f"ai_{i}_{f.name}")
+            invoer.append((f, onderwerp, auteur, taal, land, ai))
+
+    if invoer:
+        if st.button("➡️ Doorsturen naar beoordeling", type="primary"):
+            ontbreekt = [f.name for f, o, *_ in invoer if not o.strip()]
+            if ontbreekt:
+                st.error("Vul het onderwerp in voor: " + ", ".join(ontbreekt))
+            else:
+                for f, onderwerp, auteur, taal, land, ai in invoer:
+                    datum, meta_auteur = lees_metadata(f.name, f.getvalue())
+                    st.session_state.wachtrij.append(
+                        {
+                            "bestandsnaam": f.name,
+                            "onderwerp": onderwerp.strip(),
+                            "auteur": auteur,
+                            "taal": taal,
+                            "land": land,
+                            "ai": ai,
+                            "datum": datum,
+                            "meta_auteur": meta_auteur,
+                        }
+                    )
+                st.success(
+                    f"{len(invoer)} document(en) klaargezet. Ga naar **2️⃣ Beoordelen & opslaan** in de sidebar."
+                )
+    else:
+        st.info("Upload minstens één bestand om te starten.")
+
+
+# ===============================================================
+# PAGINA 2: Score berekenen en opslaan in database
+# ===============================================================
+elif pagina.startswith("2"):
+    st.title("🧮 Beoordelen & opslaan")
+    wachtrij = st.session_state.wachtrij
+
+    if not wachtrij:
+        st.info("Er staan geen documenten klaar. Upload eerst documenten op pagina 1.")
+    else:
+        resultaten = []
+        for d in wachtrij:
+            score, punten = bereken_score(d)
+            resultaten.append((d, score, punten))
+
+        overzicht = pd.DataFrame(
+            [
+                {
+                    "Document": d["bestandsnaam"],
+                    "Onderwerp": d["onderwerp"],
+                    "Auteur": d["auteur"] or "⚠️ onbekend",
+                    "Bestandsdatum": d["datum"].strftime("%Y-%m-%d") if d["datum"] else "Onbekend",
+                    "AI %": d["ai"],
+                    "Score": score,
+                    "Rating": rating(score),
+                }
+                for d, score, _ in resultaten
+            ]
+        )
+        st.dataframe(
+            overzicht,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%d")
+            },
+        )
+
+        st.subheader("🔍 Waarom deze score?")
+        keuze = st.selectbox("Kies een document", [d["bestandsnaam"] for d, _, _ in resultaten])
+        d, score, punten = next(r for r in resultaten if r[0]["bestandsnaam"] == keuze)
+        c1, c2 = st.columns([1, 2])
+        c1.metric("Betrouwbaarheid", f"{score} / 100")
+        c1.write(rating(score))
+        c2.bar_chart(pd.Series(punten, name="Punten"))
+
+        b1, b2 = st.columns(2)
+        if b1.button("💾 Opslaan in database", type="primary"):
+            con = get_con()
+            for d, score, punten in resultaten:
+                con.execute(
+                    """INSERT INTO documenten
+                    (bestandsnaam, onderwerp, taal, auteur, land, ai_percentage,
+                     bestandsdatum, toegevoegd_op, score, uitleg)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        d["bestandsnaam"], d["onderwerp"], d["taal"], d["auteur"], d["land"], d["ai"],
+                        d["datum"].strftime("%Y-%m-%d") if d["datum"] else None,
+                        datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        score, json.dumps(punten),
+                    ),
+                )
+            con.commit()
+            con.close()
+            st.session_state.wachtrij = []
+            st.success("Opgeslagen! Zoek ze terug op pagina 3.")
+            st.balloons()
+        if b2.button("🗑️ Wachtrij leegmaken"):
+            st.session_state.wachtrij = []
+            st.rerun()
+
+
+# ===============================================================
+# PAGINA 3: Zoeken
+# ===============================================================
+else:
+    st.title("🔎 Zoeken in de kennisbank")
+    df = lees_database()
+
+    if df.empty:
+        st.info("De database is nog leeg. Voeg eerst documenten toe via pagina 1 en 2.")
+    else:
+        zoek = st.text_input("Zoek op onderwerp, bestandsnaam of auteur")
+        c1, c2, c3 = st.columns(3)
+        talen = c1.multiselect("Taal", sorted(df["taal"].unique()))
+        landen = c2.multiselect("Land", sorted(df["land"].unique()))
+        min_score = c3.slider("Minimale score", 1, 100, 1)
+
+        res = df.copy()
+        if zoek:
+            z = zoek.lower()
+            mask = (
+                res["onderwerp"].str.lower().str.contains(z, na=False)
+                | res["bestandsnaam"].str.lower().str.contains(z, na=False)
+                | res["auteur"].str.lower().str.contains(z, na=False)
+            )
+            res = res[mask]
+        if talen:
+            res = res[res["taal"].isin(talen)]
+        if landen:
+            res = res[res["land"].isin(landen)]
+        res = res[res["score"] >= min_score].sort_values("score", ascending=False)
+        res["Rating"] = res["score"].apply(rating)
+
+        st.write(f"**{len(res)}** resultaat/resultaten")
+        st.dataframe(
+            res[["bestandsnaam", "onderwerp", "auteur", "taal", "land", "ai_percentage", "score", "Rating"]],
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%d"),
+                "ai_percentage": "AI %",
+            },
+        )
+
+        if not res.empty:
+            st.subheader("🔍 Waarom deze score?")
+            opties = {f"{r.bestandsnaam} ({r.onderwerp})": r for r in res.itertuples()}
+            r = opties[st.selectbox("Kies een document", list(opties))]
+            k1, k2 = st.columns([1, 2])
+            k1.metric("Betrouwbaarheid", f"{r.score} / 100")
+            k1.write(rating(r.score))
+            k1.write(f"**Auteur:** {r.auteur or '⚠️ onbekend'}")
+            k1.write(f"**Bestandsdatum:** {r.bestandsdatum or 'onbekend'}")
+            k2.bar_chart(pd.Series(json.loads(r.uitleg), name="Punten"))
+
+        st.download_button(
+            "⬇️ Download database als CSV",
+            df.to_csv(index=False).encode("utf-8"),
+            file_name="kennisbank.csv",
+            mime="text/csv",
+        )
