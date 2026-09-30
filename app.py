@@ -8,7 +8,7 @@ st.set_page_config(
     layout="wide",
 )
 
-data = pd.read_csv("business-financial-data-June-2026-quarter.csv")
+data = pd.read_csv("business-financial-data-June-2026-quarter.csv") #### vervang hier de naam door het csv bestand dat we gegeven krijgen###
 st.write(data)
 
 # --------------------------------------------------
