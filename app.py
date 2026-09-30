@@ -24,9 +24,7 @@ st.title("HACKATON")
 
 with st.sidebar:
     st.header("About app")
-    st.write("This is my first app.")
-    st.write("gailly geitje")
-    st.caption("Built with Streamlit")
+    st.write("suck my fat one")
 
 st.header("Interactive dashboard")
 st.markdown("This is created using `st.markdown`.")
