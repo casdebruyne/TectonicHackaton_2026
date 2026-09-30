@@ -3,14 +3,7 @@ import io
 import json
 import sqlite3
 from datetime import datetime
-from datetime import datetime, timezone
 
-jaren = (datetime.now(timezone.utc) - d["datum"]).days / 365
-datum = d["datum"]
-if datum.tzinfo is None:
-    datum = datum.replace(tzinfo=timezone.utc)
-
-jaren = (datetime.now(timezone.utc) - datum).days / 365
 import docx
 import openpyxl
 import pandas as pd
@@ -149,7 +142,6 @@ def bereken_score(d, uitsluiten_id=None):
 
     # Actualiteit: daalt traag (halveert per 5 jaar) en zakt nooit onder 40%
     if d["datum"]:
-        st.write(type(d["datum"]), d["datum"])
         jaren = (datetime.now() - d["datum"]).days / 365
         f["Actualiteit"] = max(0.4, 0.5 ** (jaren / 5))
     else:
