@@ -2,10 +2,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-st.title("Hello World!")
+st.title("Business Builders!")
 
 with st.sidebar:
-    st.header("About app")
+    st.header("tectonic hackathon")
     st.write("This is my first app.")
 
 st.header("This is a header with a divider")
