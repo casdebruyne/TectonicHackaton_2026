@@ -75,5 +75,3 @@ if st.button("🎈 Surprise me!"):
     if st.session_state.surprise_open:
         st.balloons()
         st.success("Surprise activated!")
-chart_data = pd.DataFrame(np.random.randn(10,3), columns=["A","B","C"])
-st.area_chart(chart_data)
