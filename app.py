@@ -25,15 +25,16 @@ import streamlit.components.v1 as components
 
 components.html("""
 <div id="b" style="font-size:80px; cursor:pointer; text-align:center; user-select:none;">🎈</div>
-<audio id="pop-sound" src="https://assets.mixkit.co/active_storage/sfx/2000/2000-preview.mp3"></audio>
+<div id="player"></div>
 <script>
 const b = document.getElementById("b");
-const sound = document.getElementById("pop-sound");
+const player = document.getElementById("player");
 b.onclick = () => {
-  sound.currentTime = 0;
-  sound.play();
   b.textContent = "💥";
   setTimeout(() => { b.textContent = "🎈"; }, 800);
+  player.innerHTML = '<iframe width="300" height="170" ' +
+    'src="https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1" ' +
+    'allow="autoplay; encrypted-media" frameborder="0"></iframe>';
 };
 </script>
-""", height=10000)
+""", height=320)
