@@ -5,7 +5,7 @@ Description of the app ...
 
 ## Demo App
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://tectonichackaton2026-ysp8aadyjz9hwl9wf69ji7.streamlit.app/)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://tectonichackaton2026-wtiard6rvzwqny5qdv29qj.streamlit.app/)
 
 ## GitHub Codespaces
 
