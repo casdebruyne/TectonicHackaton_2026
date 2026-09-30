@@ -1,5 +1,6 @@
 import base64
 import io
+import re
 import json
 import sqlite3
 from datetime import datetime
@@ -132,6 +133,121 @@ def lees_metadata(naam, data):
     except Exception:
         pass
     return None, None
+
+
+# ---------------------------------------------------------------
+# Suggesties afleiden uit het document (taal, auteur, onderwerp, land)
+# ---------------------------------------------------------------
+STOPWOORDEN = {
+    "Nederlands": {"het", "een", "van", "dat", "op", "te", "voor", "met", "niet", "zijn", "wordt",
+                   "door", "aan", "ook", "als", "bij", "om", "naar", "deze", "wij", "uw"},
+    "Frans": {"le", "la", "les", "des", "un", "une", "est", "que", "pour", "dans", "pas", "sur",
+              "avec", "par", "au", "du", "qui", "sont", "ce", "nous", "vous"},
+    "Engels": {"the", "and", "of", "to", "that", "for", "with", "on", "are", "as", "this", "be",
+               "by", "not", "or", "from", "at", "it", "we", "your"},
+    "Duits": {"der", "das", "und", "ist", "nicht", "von", "zu", "mit", "ein", "eine", "für", "auf",
+              "im", "dem", "sich", "auch", "wird", "sind", "wir", "sie"},
+}
+LAND_PATRONEN = {
+    "België": r"\b(belgië|belgie|belgique|belgium|brussel|bruxelles|vlaanderen|vlaams|wallonië|wallonie|antwerpen|gent|be0\d{9})\b|\+32\s?\d",
+    "Nederland": r"\b(nederland|netherlands|amsterdam|rotterdam|den haag|utrecht|kvk)\b|\+31\s?\d",
+    "Frankrijk": r"\b(frankrijk|france|paris|siret|lyon|marseille)\b|\+33\s?\d",
+    "Duitsland": r"\b(duitsland|deutschland|germany|berlin|münchen|gmbh)\b|\+49\s?\d",
+    "Verenigd Koninkrijk": r"\b(verenigd koninkrijk|united kingdom|england|london|ltd)\b|\+44\s?\d",
+}
+ONZIN_AUTEURS = {"admin", "administrator", "user", "gebruiker", "microsoft office user",
+                 "python-docx", "openpyxl", "unknown", "onbekend", "author", "owner"}
+ONZIN_TITELS = ("untitled", "naamloos", "microsoft word", "document1", "sans titre")
+
+
+def lees_tekst(naam, data, max_tekens=6000):
+    # Haalt wat tekst uit het begin van het document (voor taal, land en onderwerp)
+    naam = naam.lower()
+    tekst = ""
+    try:
+        if naam.endswith(".pdf"):
+            for pagina in pypdf.PdfReader(io.BytesIO(data)).pages[:5]:
+                tekst += (pagina.extract_text() or "") + "\n"
+                if len(tekst) > max_tekens:
+                    break
+        elif naam.endswith(".docx"):
+            for par in docx.Document(io.BytesIO(data)).paragraphs:
+                if par.text.strip():
+                    tekst += par.text + "\n"
+                if len(tekst) > max_tekens:
+                    break
+        elif naam.endswith(".xlsx"):
+            wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+            for rij in wb.worksheets[0].iter_rows(max_row=60, values_only=True):
+                tekst += " ".join(c for c in rij if isinstance(c, str)) + "\n"
+    except Exception:
+        pass
+    return tekst[:max_tekens]
+
+
+def detecteer_taal(tekst):
+    woorden = re.findall(r"[^\W\d_]+", tekst.lower())
+    if len(woorden) < 15:
+        return None
+    scores = sorted(
+        ((t, sum(1 for w in woorden if w in sw)) for t, sw in STOPWOORDEN.items()),
+        key=lambda x: -x[1],
+    )
+    if scores[0][1] >= 5 and scores[0][1] >= 1.5 * max(scores[1][1], 1):
+        return scores[0][0]
+    return None
+
+
+def detecteer_land(tekst):
+    t = tekst.lower()
+    scores = sorted(
+        ((land, len(re.findall(p, t))) for land, p in LAND_PATRONEN.items()),
+        key=lambda x: -x[1],
+    )
+    if scores[0][1] >= 1 and scores[0][1] > scores[1][1]:
+        return scores[0][0]
+    return None
+
+
+def maak_suggestie(naam, data):
+    # Geeft een dict met onderwerp, auteur, taal, land (None = niet te achterhalen)
+    ext = naam.rsplit(".", 1)[-1].lower()
+    titel = auteur = None
+    try:
+        if ext == "pdf":
+            m = pypdf.PdfReader(io.BytesIO(data)).metadata
+            if m:
+                titel, auteur = m.title, m.author
+        elif ext == "docx":
+            p = docx.Document(io.BytesIO(data)).core_properties
+            titel, auteur = p.title, (p.author or p.last_modified_by)
+        elif ext == "xlsx":
+            p = openpyxl.load_workbook(io.BytesIO(data), read_only=True).properties
+            titel, auteur = p.title, (p.creator or p.lastModifiedBy)
+    except Exception:
+        pass
+
+    if not auteur or auteur.strip().lower() in ONZIN_AUTEURS:
+        auteur = None
+
+    tekst = lees_tekst(naam, data)
+
+    onderwerp = None
+    if titel and len(titel.strip()) > 2 and not titel.strip().lower().startswith(ONZIN_TITELS):
+        onderwerp = titel.strip()
+    else:
+        regels = [r.strip() for r in tekst.splitlines() if r.strip()]
+        if regels and 3 <= len(regels[0]) <= 100:
+            onderwerp = regels[0]
+    if not onderwerp:  # laatste redmiddel: bestandsnaam
+        onderwerp = re.sub(r"[_\-]+", " ", naam.rsplit(".", 1)[0]).strip() or None
+
+    return {
+        "onderwerp": onderwerp,
+        "auteur": auteur.strip() if auteur else None,
+        "taal": detecteer_taal(tekst),
+        "land": detecteer_land(tekst),
+    }
 
 
 # ---------------------------------------------------------------
@@ -276,7 +392,11 @@ def ga_naar(p):
 # ===============================================================
 if pagina == "upload":
     st.title("📤 Documenten uploaden")
-    st.write("Upload documenten en vul per document de gegevens in.")
+    st.write(
+        "Upload documenten. Wat we zelf uit het document kunnen afleiden vullen we alvast in als "
+        "suggestie. Controleer en pas aan waar nodig."
+    )
+    st.session_state.setdefault("sugg", {})
 
     bestanden = st.file_uploader(
         "Kies of drop hier je bestanden (PDF, Word, Excel, afbeeldingen)",
@@ -286,30 +406,60 @@ if pagina == "upload":
 
     invoer = []
     for i, f in enumerate(bestanden or []):
+        basis = f"{f.name}_{f.size}"
+        if basis not in st.session_state.sugg:
+            st.session_state.sugg[basis] = maak_suggestie(f.name, f.getvalue())
+        s = st.session_state.sugg[basis]
+        k = f"inv_{i}_{basis}"
+
         with st.expander(f"📄 {f.name}", expanded=True):
+            herkend = [n for n in ("onderwerp", "auteur", "taal", "land") if s.get(n)]
+            zelf = [n for n in ("onderwerp", "auteur", "taal", "land") if not s.get(n)]
+            if herkend:
+                st.caption("✨ Automatisch voorgesteld: " + ", ".join(herkend) + ". Controleer even of het klopt.")
+            if zelf:
+                st.caption("✍️ Zelf in te vullen: " + ", ".join(zelf))
+
             c1, c2 = st.columns(2)
-            onderwerp = c1.text_input("Onderwerp", key=f"onderwerp_{i}_{f.name}")
-            auteur = c2.text_input("Naam auteur", key=f"auteur_{i}_{f.name}")
+            onderwerp = c1.text_input("Onderwerp", value=s["onderwerp"] or "", key=f"{k}_onderwerp")
+            auteur = c2.text_input("Naam auteur", value=s["auteur"] or "", key=f"{k}_auteur")
             c3, c4 = st.columns(2)
-            taal = c3.selectbox("Taal", TALEN, key=f"taal_{i}_{f.name}")
-            land = c4.selectbox("Land", LANDEN, key=f"land_{i}_{f.name}")
-            ai = st.slider("Percentage AI-gegenereerd", 0, 100, 0, key=f"ai_{i}_{f.name}")
+            taal = c3.selectbox(
+                "Taal", TALEN, key=f"{k}_taal", placeholder="Kies een taal…",
+                index=TALEN.index(s["taal"]) if s["taal"] in TALEN else None,
+            )
+            land = c4.selectbox(
+                "Land", LANDEN, key=f"{k}_land", placeholder="Kies een land…",
+                index=LANDEN.index(s["land"]) if s["land"] in LANDEN else None,
+            )
+            ai = st.slider("Percentage AI-gegenereerd", 0, 100, 0, key=f"{k}_ai")
             invoer.append((f, onderwerp, auteur, taal, land, ai))
 
     if invoer:
-        if st.button("➡️ Doorsturen naar beoordeling", type="primary"):
-            ontbreekt = [f.name for f, o, *_ in invoer if not o.strip()]
-            if ontbreekt:
-                st.error("Vul het onderwerp in voor: " + ", ".join(ontbreekt))
+        if st.button("✅ Bevestig en doorsturen naar beoordeling", type="primary"):
+            problemen = []
+            for f, onderwerp, auteur, taal, land, ai in invoer:
+                leeg = [
+                    naam for naam, waarde in
+                    (("onderwerp", onderwerp), ("auteur", auteur), ("taal", taal), ("land", land))
+                    if not waarde or not str(waarde).strip()
+                ]
+                if leeg:
+                    problemen.append(f"**{f.name}**: {', '.join(leeg)}")
+            if problemen:
+                st.error("Nog in te vullen:\n\n" + "\n\n".join(problemen))
             else:
                 for f, onderwerp, auteur, taal, land, ai in invoer:
                     data = f.getvalue()
                     datum, meta_auteur = lees_metadata(f.name, data)
                     st.session_state.wachtrij.append({
-                        "bestandsnaam": f.name, "onderwerp": onderwerp.strip(), "auteur": auteur,
+                        "bestandsnaam": f.name, "onderwerp": onderwerp.strip(), "auteur": auteur.strip(),
                         "taal": taal, "land": land, "ai": ai, "datum": datum,
                         "meta_auteur": meta_auteur, "inhoud": data,
                     })
+                for sleutel in [x for x in st.session_state.keys() if str(x).startswith("inv_")]:
+                    del st.session_state[sleutel]
+                st.session_state.sugg = {}
                 st.session_state.up_nr += 1  # uploader leegmaken
                 st.session_state.pagina = "beoordeel"
                 st.rerun()
