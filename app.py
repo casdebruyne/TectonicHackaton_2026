@@ -15,7 +15,7 @@ st.set_page_config(
 @st.cache_data
 def get_chart_data():
     rng = np.random.default_rng(42)
-    return pd.DataFrame(rng.standard_normal(10, 3), columns=["A", "B", "C"])
+    return pd.DataFrame(np.random.randn(10, 3), columns=["A", "B", "C"])
 
 
 def render_surprise_image():
