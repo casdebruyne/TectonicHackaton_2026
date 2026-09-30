@@ -10,6 +10,7 @@ import pandas as pd
 import pypdf
 import streamlit as st
 from PIL import ExifTags, Image
+from streamlit_pdf_viewer import pdf_viewer
 
 st.set_page_config(page_title="Kennis Betrouwbaarheid", page_icon="🛡️", layout="wide")
 
@@ -245,11 +246,10 @@ def toon_document(naam, data):
         mime=MIME.get(ext, "application/octet-stream"), type="primary",
     )
     if ext == "pdf":
-        b64 = base64.b64encode(data).decode()
-        st.markdown(
-            f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="700"></iframe>',
-            unsafe_allow_html=True,
-        )
+        # Gebruik de pdf_viewer in plaats van het iframe. 
+        # Je hoeft de data niet meer naar base64 om te zetten!
+        pdf_viewer(input=data, width=700)
+        
     elif ext in ("jpg", "jpeg", "png"):
         st.image(data, use_container_width=True)
     elif ext == "docx":
@@ -259,7 +259,6 @@ def toon_document(naam, data):
         for blad, tabel in pd.read_excel(io.BytesIO(data), sheet_name=None).items():
             st.caption(f"Blad: {blad}")
             st.dataframe(tabel, use_container_width=True)
-
 
 # ---------------------------------------------------------------
 # Sidebar / navigatie
