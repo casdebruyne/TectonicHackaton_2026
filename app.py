@@ -32,4 +32,4 @@ b.onclick = () => {
   setTimeout(() => { b.textContent = "🎈"; }, 800);
 };
 </script>
-""", height=120)
+""", height=1000)
