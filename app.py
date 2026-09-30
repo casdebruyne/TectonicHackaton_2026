@@ -21,3 +21,15 @@ st.area_chart(chart_data)
 
 if st.button("🎈 Verras me!"):
     st.balloons()
+import streamlit.components.v1 as components
+
+components.html("""
+<div id="b" style="font-size:80px; cursor:pointer; text-align:center; user-select:none;">🎈</div>
+<script>
+const b = document.getElementById("b");
+b.onclick = () => {
+  b.textContent = "💥";
+  setTimeout(() => { b.textContent = "🎈"; }, 800);
+};
+</script>
+""", height=120)
