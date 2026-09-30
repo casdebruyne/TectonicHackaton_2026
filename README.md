@@ -62,7 +62,7 @@ The score consists of five factors with fixed weights (100 points in total). Thi
 
 ## 👥 Team
 
-Mauro Collier
-William Hovine
-Gill Derous
+Mauro Collier, 
+William Hovine, 
+Gill Derous, 
 Cas De Bruyne
