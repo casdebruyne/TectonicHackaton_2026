@@ -16,7 +16,7 @@ with st.sidebar:
     st.header("About app")
     st.write("This is my first app.")
     st.write("gailly geitje")
-    st.write("##niggers niggers hate niggers")
+    st.markdown('<p style="font-size: 50px; font-weight: bold;">niggers niggers hate niggers</p>', unsafe_allow_html=True)
 
 st.header("Interactive demo")
 st.markdown("This is created using `st.markdown`.")
