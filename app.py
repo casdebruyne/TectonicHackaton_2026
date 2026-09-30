@@ -1,7 +1,7 @@
+from datetime import datetime
 import io
 import json
 import sqlite3
-from datetime import datetime
 
 import docx
 import openpyxl
@@ -10,11 +10,15 @@ import pypdf
 import streamlit as st
 from PIL import ExifTags, Image
 
-st.set_page_config(page_title="Kennis Betrouwbaarheid", page_icon="🛡️", layout="wide")
+# ---------------------------------------------------------------
+# Configuratie & Constanten
+# ---------------------------------------------------------------
+st.set_page_config(
+    page_title="Kennis Betrouwbaarheid", page_icon="🛡️", layout="wide"
+)
 
 DB = "kennis.db"
 
-# Maximaal aantal punten per factor (samen 100) -> zo is de score uitlegbaar
 GEWICHTEN = {
     "Actualiteit": 30,
     "Auteur": 20,
@@ -22,13 +26,29 @@ GEWICHTEN = {
     "Metadata aanwezig": 15,
     "Bestandstype": 10,
 }
-TYPE_SCORE = {"pdf": 1.0, "docx": 0.9, "xlsx": 0.8, "jpg": 0.4, "jpeg": 0.4, "png": 0.4}
+
+TYPE_SCORE = {
+    "pdf": 1.0,
+    "docx": 0.9,
+    "xlsx": 0.8,
+    "jpg": 0.4,
+    "jpeg": 0.4,
+    "png": 0.4,
+}
+
 TALEN = ["Nederlands", "Frans", "Engels", "Duits", "Andere"]
-LANDEN = ["België", "Nederland", "Frankrijk", "Duitsland", "Verenigd Koninkrijk", "Andere"]
+LANDEN = [
+    "België",
+    "Nederland",
+    "Frankrijk",
+    "Duitsland",
+    "Verenigd Koninkrijk",
+    "Andere",
+]
 
 
 # ---------------------------------------------------------------
-# Database
+# Database Functies
 # ---------------------------------------------------------------
 def get_con():
     con = sqlite3.connect(DB)
@@ -50,7 +70,7 @@ def lees_database():
 
 
 # ---------------------------------------------------------------
-# Metadata uit het bestand zelf
+# Hulpfuncties: Metadata & Tekst & AI Detectie
 # ---------------------------------------------------------------
 def lees_metadata(naam, data):
     """Geeft (datum, auteur) uit het bestand zelf, of (None, None)."""
@@ -65,21 +85,89 @@ def lees_metadata(naam, data):
             p = docx.Document(io.BytesIO(data)).core_properties
             return p.modified, (p.last_modified_by or p.author)
         elif naam.endswith(".xlsx"):
-            p = openpyxl.load_workbook(io.BytesIO(data), read_only=True).properties
+            p = openpyxl.load_workbook(
+                io.BytesIO(data), read_only=True
+            ).properties
             return p.modified, (p.lastModifiedBy or p.creator)
         elif naam.endswith((".jpg", ".jpeg", ".png")):
             exif = Image.open(io.BytesIO(data))._getexif()
             if exif:
                 for tag_id, waarde in exif.items():
-                    if ExifTags.TAGS.get(tag_id) in ("DateTimeOriginal", "DateTime"):
-                        return datetime.strptime(waarde, "%Y:%m:%d %H:%M:%S"), None
+                    if ExifTags.TAGS.get(tag_id) in (
+                        "DateTimeOriginal",
+                        "DateTime",
+                    ):
+                        return (
+                            datetime.strptime(waarde, "%Y:%m:%d %H:%M:%S"),
+                            None,
+                        )
     except Exception:
         pass
     return None, None
 
 
+def haal_tekst_uit_bestand(naam, data):
+    """Haalt de leesbare tekst uit PDF, DOCX of TXT bestanden."""
+    naam = naam.lower()
+    tekst = ""
+    try:
+        if naam.endswith(".pdf"):
+            reader = pypdf.PdfReader(io.BytesIO(data))
+            for page in reader.pages:
+                t = page.extract_text()
+                if t:
+                    tekst += t + "\n"
+        elif naam.endswith(".docx"):
+            doc = docx.Document(io.BytesIO(data))
+            tekst = "\n".join([p.text for p in doc.paragraphs])
+        elif naam.endswith(".txt"):
+            tekst = data.decode("utf-8", errors="ignore")
+    except Exception:
+        pass
+    return tekst.strip()
+
+
+def detecteer_ai_percentage(tekst):
+    """Analyseert tekststructuur om een automatische schatting van AI-content te maken."""
+    if not tekst or len(tekst) < 30:
+        return 0  # Te weinig tekst aanwezig om betrouwbaar te scannen
+
+    woorden = tekst.split()
+    zinnen = [z for z in tekst.split(".") if z.strip()]
+
+    if not zinnen:
+        return 0
+
+    gemiddelde_zinslengte = len(woorden) / len(zinnen)
+
+    # Signaalwoorden die frequent in AI-gegenereerde teksten voorkomen
+    ai_signaalwoorden = [
+        "conclusie",
+        "daarnaast",
+        "bovendien",
+        "belangrijkste",
+        "optimaliseren",
+        "samenvattend",
+        "essentieel",
+        "sleutelrol",
+        "inleiding",
+        "kortom",
+        "tot slot",
+    ]
+
+    matches = sum(
+        1 for w in woorden if w.lower().strip(",.") in ai_signaalwoorden
+    )
+
+    # Bepaal een geschat AI-percentage op basis van woordgebruik en zinsbouw
+    score = (matches / len(woorden)) * 500 + (
+        15 if 14 <= gemiddelde_zinslengte <= 24 else 0
+    )
+    return min(100, max(0, int(score)))
+
+
 # ---------------------------------------------------------------
-# Score (1-100), elke factor is zichtbaar
+# Score Berekening (1-100)
 # ---------------------------------------------------------------
 def bereken_score(d):
     f = {}
@@ -91,14 +179,19 @@ def bereken_score(d):
 
     if not d["auteur"].strip():
         f["Auteur"] = 0.0
-    elif d["meta_auteur"] and d["meta_auteur"].strip().lower() == d["auteur"].strip().lower():
+    elif (
+        d["meta_auteur"]
+        and d["meta_auteur"].strip().lower() == d["auteur"].strip().lower()
+    ):
         f["Auteur"] = 1.0  # naam komt overeen met het bestand zelf
     else:
         f["Auteur"] = 0.6  # ingevuld maar niet te controleren
 
     f["AI-percentage"] = 1 - d["ai"] / 100
     f["Metadata aanwezig"] = 1.0 if d["datum"] else 0.0
-    f["Bestandstype"] = TYPE_SCORE.get(d["bestandsnaam"].rsplit(".", 1)[-1].lower(), 0.3)
+    f["Bestandstype"] = TYPE_SCORE.get(
+        d["bestandsnaam"].rsplit(".", 1)[-1].lower(), 0.3
+    )
 
     punten = {k: round(f[k] * GEWICHTEN[k], 1) for k in f}
     score = max(1, min(100, round(sum(punten.values()))))
@@ -114,7 +207,7 @@ def rating(score):
 
 
 # ---------------------------------------------------------------
-# Navigatie
+# Navigatie & Session State
 # ---------------------------------------------------------------
 st.sidebar.title("🛡️ Kennis Betrouwbaarheid")
 pagina = st.sidebar.radio(
@@ -122,12 +215,13 @@ pagina = st.sidebar.radio(
     ["1️⃣ Uploaden", "2️⃣ Beoordelen & opslaan", "3️⃣ Zoeken"],
     key="pagina",
 )
+
 if "wachtrij" not in st.session_state:
     st.session_state.wachtrij = []
 
 
 # ===============================================================
-# PAGINA 1: Uploaden + gegevens invullen
+# PAGINA 1: Uploaden + Gegevens invullen (Automatische AI Detectie)
 # ===============================================================
 if pagina.startswith("1"):
     st.title("📤 Documenten uploaden")
@@ -142,13 +236,15 @@ if pagina.startswith("1"):
     for i, f in enumerate(bestanden or []):
         with st.expander(f"📄 {f.name}", expanded=True):
             c1, c2 = st.columns(2)
-            onderwerp = c1.text_input("Onderwerp", key=f"onderwerp_{i}_{f.name}")
+            onderwerp = c1.text_input(
+                "Onderwerp", key=f"onderwerp_{i}_{f.name}"
+            )
             auteur = c2.text_input("Naam auteur", key=f"auteur_{i}_{f.name}")
             c3, c4 = st.columns(2)
             taal = c3.selectbox("Taal", TALEN, key=f"taal_{i}_{f.name}")
             land = c4.selectbox("Land", LANDEN, key=f"land_{i}_{f.name}")
-            ai = st.slider("Percentage AI-gegenereerd", 0, 100, 0, key=f"ai_{i}_{f.name}")
-            invoer.append((f, onderwerp, auteur, taal, land, ai))
+
+            invoer.append((f, onderwerp, auteur, taal, land))
 
     if invoer:
         if st.button("➡️ Doorsturen naar beoordeling", type="primary"):
@@ -156,22 +252,33 @@ if pagina.startswith("1"):
             if ontbreekt:
                 st.error("Vul het onderwerp in voor: " + ", ".join(ontbreekt))
             else:
-                for f, onderwerp, auteur, taal, land, ai in invoer:
-                    datum, meta_auteur = lees_metadata(f.name, f.getvalue())
-                    st.session_state.wachtrij.append(
-                        {
-                            "bestandsnaam": f.name,
-                            "onderwerp": onderwerp.strip(),
-                            "auteur": auteur,
-                            "taal": taal,
-                            "land": land,
-                            "ai": ai,
-                            "datum": datum,
-                            "meta_auteur": meta_auteur,
-                        }
-                    )
+                with st.spinner(
+                    "🔍 Bestanden analyseren & AI-percentage berekenen..."
+                ):
+                    for f, onderwerp, auteur, taal, land in invoer:
+                        bytes_data = f.getvalue()
+
+                        # 1. Lees metadata uit het bestand (datum & auteur)
+                        datum, meta_auteur = lees_metadata(f.name, bytes_data)
+
+                        # 2. Haal tekst op & bereken automatisch AI %
+                        tekst = haal_tekst_uit_bestand(f.name, bytes_data)
+                        ai_percentage = detecteer_ai_percentage(tekst)
+
+                        st.session_state.wachtrij.append(
+                            {
+                                "bestandsnaam": f.name,
+                                "onderwerp": onderwerp.strip(),
+                                "auteur": auteur,
+                                "taal": taal,
+                                "land": land,
+                                "ai": ai_percentage,  # Automatisch berekend!
+                                "datum": datum,
+                                "meta_auteur": meta_auteur,
+                            }
+                        )
                 st.success(
-                    f"{len(invoer)} document(en) klaargezet. Ga naar **2️⃣ Beoordelen & opslaan** in de sidebar."
+                    f"{len(invoer)} document(en) geanalyseerd en klaargezet. Ga naar **2️⃣ Beoordelen & opslaan** in de sidebar."
                 )
     else:
         st.info("Upload minstens één bestand om te starten.")
@@ -185,7 +292,9 @@ elif pagina.startswith("2"):
     wachtrij = st.session_state.wachtrij
 
     if not wachtrij:
-        st.info("Er staan geen documenten klaar. Upload eerst documenten op pagina 1.")
+        st.info(
+            "Er staan geen documenten klaar. Upload eerst documenten op pagina 1."
+        )
     else:
         resultaten = []
         for d in wachtrij:
@@ -198,7 +307,11 @@ elif pagina.startswith("2"):
                     "Document": d["bestandsnaam"],
                     "Onderwerp": d["onderwerp"],
                     "Auteur": d["auteur"] or "⚠️ onbekend",
-                    "Bestandsdatum": d["datum"].strftime("%Y-%m-%d") if d["datum"] else "Onbekend",
+                    "Bestandsdatum": (
+                        d["datum"].strftime("%Y-%m-%d")
+                        if d["datum"]
+                        else "Onbekend"
+                    ),
                     "AI %": d["ai"],
                     "Score": score,
                     "Rating": rating(score),
@@ -211,13 +324,19 @@ elif pagina.startswith("2"):
             hide_index=True,
             use_container_width=True,
             column_config={
-                "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%d")
+                "Score": st.column_config.ProgressColumn(
+                    "Score", min_value=0, max_value=100, format="%d"
+                )
             },
         )
 
         st.subheader("🔍 Waarom deze score?")
-        keuze = st.selectbox("Kies een document", [d["bestandsnaam"] for d, _, _ in resultaten])
-        d, score, punten = next(r for r in resultaten if r[0]["bestandsnaam"] == keuze)
+        keuze = st.selectbox(
+            "Kies een document", [d["bestandsnaam"] for d, _, _ in resultaten]
+        )
+        d, score, punten = next(
+            r for r in resultaten if r[0]["bestandsnaam"] == keuze
+        )
         c1, c2 = st.columns([1, 2])
         c1.metric("Betrouwbaarheid", f"{score} / 100")
         c1.write(rating(score))
@@ -233,10 +352,20 @@ elif pagina.startswith("2"):
                      bestandsdatum, toegevoegd_op, score, uitleg)
                     VALUES (?,?,?,?,?,?,?,?,?,?)""",
                     (
-                        d["bestandsnaam"], d["onderwerp"], d["taal"], d["auteur"], d["land"], d["ai"],
-                        d["datum"].strftime("%Y-%m-%d") if d["datum"] else None,
+                        d["bestandsnaam"],
+                        d["onderwerp"],
+                        d["taal"],
+                        d["auteur"],
+                        d["land"],
+                        d["ai"],
+                        (
+                            d["datum"].strftime("%Y-%m-%d")
+                            if d["datum"]
+                            else None
+                        ),
                         datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        score, json.dumps(punten),
+                        score,
+                        json.dumps(punten),
                     ),
                 )
             con.commit()
@@ -250,14 +379,16 @@ elif pagina.startswith("2"):
 
 
 # ===============================================================
-# PAGINA 3: Zoeken
+# PAGINA 3: Zoeken & Filteren
 # ===============================================================
 else:
     st.title("🔎 Zoeken in de kennisbank")
     df = lees_database()
 
     if df.empty:
-        st.info("De database is nog leeg. Voeg eerst documenten toe via pagina 1 en 2.")
+        st.info(
+            "De database is nog leeg. Voeg eerst documenten toe via pagina 1 en 2."
+        )
     else:
         zoek = st.text_input("Zoek op onderwerp, bestandsnaam of auteur")
         c1, c2, c3 = st.columns(3)
@@ -278,23 +409,38 @@ else:
             res = res[res["taal"].isin(talen)]
         if landen:
             res = res[res["land"].isin(landen)]
-        res = res[res["score"] >= min_score].sort_values("score", ascending=False)
+        res = res[res["score"] >= min_score].sort_values(
+            "score", ascending=False
+        )
         res["Rating"] = res["score"].apply(rating)
 
         st.write(f"**{len(res)}** resultaat/resultaten")
         st.dataframe(
-            res[["bestandsnaam", "onderwerp", "auteur", "taal", "land", "ai_percentage", "score", "Rating"]],
+            res[[
+                "bestandsnaam",
+                "onderwerp",
+                "auteur",
+                "taal",
+                "land",
+                "ai_percentage",
+                "score",
+                "Rating",
+            ]],
             hide_index=True,
             use_container_width=True,
             column_config={
-                "score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%d"),
+                "score": st.column_config.ProgressColumn(
+                    "Score", min_value=0, max_value=100, format="%d"
+                ),
                 "ai_percentage": "AI %",
             },
         )
 
         if not res.empty:
             st.subheader("🔍 Waarom deze score?")
-            opties = {f"{r.bestandsnaam} ({r.onderwerp})": r for r in res.itertuples()}
+            opties = {
+                f"{r.bestandsnaam} ({r.onderwerp})": r for r in res.itertuples()
+            }
             r = opties[st.selectbox("Kies een document", list(opties))]
             k1, k2 = st.columns([1, 2])
             k1.metric("Betrouwbaarheid", f"{r.score} / 100")
