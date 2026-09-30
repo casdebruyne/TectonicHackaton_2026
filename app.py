@@ -8,6 +8,9 @@ st.set_page_config(
     layout="wide",
 )
 
+data = pd.read_csv("business-financial-data-June-2026-quarter.csv")
+st.write(data)
+
 # --------------------------------------------------
 # Helper functions
 # --------------------------------------------------
