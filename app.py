@@ -26,32 +26,6 @@ def render_surprise_image():
         <script>
         const b = document.getElementById("b");
         const container = document.getElementById("imageContainer");
-
-        b.onclick = () => {
-          b.textContent = "💥";
-          setTimeout(() => { b.textContent = "🎈"; }, 800);
-          
-          // Fullscreen image display
-          const img = document.createElement("img");
-          img.src = "funny.jpg";
-          img.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-            background-color: black;
-            z-index: 9999;
-            cursor: pointer;
-          `;
-          
-          img.onclick = () => img.remove(); // Klik op de afbeelding om te sluiten
-          document.body.appendChild(img);
-        };
-        </script>
-        """,
-        height=320,
     )
 
 
