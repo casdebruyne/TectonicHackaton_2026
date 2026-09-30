@@ -34,9 +34,8 @@ MIME = {
 TALEN = ["Nederlands", "Frans", "Engels", "Duits", "Andere"]
 LANDEN = ["België", "Nederland", "Frankrijk", "Duitsland", "Verenigd Koninkrijk", "Andere"]
 
-# Niveaus voor het AI-gehalte. None = onbekend -> telt niet mee in de score.
+# Niveaus voor het AI-gehalte (onbekend = vinkje "Ik weet het niet", telt niet mee in de score)
 AI_NIVEAUS = {
-    "❓ Weet ik niet": None,
     "0% · Geen AI": 0,
     "25% · Weinig AI": 25,
     "50% · De helft": 50,
@@ -151,13 +150,24 @@ def lees_metadata(naam, data):
 # ---------------------------------------------------------------
 # Score (1-100)
 # ---------------------------------------------------------------
+def parse_upload(tekst):
+    try:
+        return datetime.strptime(tekst, "%Y-%m-%d %H:%M") if tekst else None
+    except ValueError:
+        return None
+
+
 def bereken_score(d, uitsluiten_id=None):
     f = {}
 
-    # Actualiteit: daalt traag (halveert per 5 jaar) en zakt nooit onder 40%
+    # Actualiteit: daalt traag (halveert per 5 jaar) en zakt nooit onder 40%.
+    # Zonder bestandsdatum gebruiken we de uploaddatum, maar die zegt minder (max. 50%).
     if d["datum"]:
         jaren = (datetime.now() - d["datum"]).days / 365
         f["Actualiteit"] = max(0.4, 0.5 ** (jaren / 5))
+    elif d.get("upload"):
+        jaren = (datetime.now() - d["upload"]).days / 365
+        f["Actualiteit"] = min(0.5, max(0.4, 0.5 ** (jaren / 5)))
     else:
         f["Actualiteit"] = 0.3
 
@@ -194,20 +204,21 @@ def herbereken_alles(max_rondes=5):
     """Berekent alle opgeslagen scores opnieuw, tot er niets meer verandert."""
     con = get_con()
     rijen = con.execute(
-        "SELECT id, bestandsnaam, auteur, ai_percentage, bestandsdatum, score FROM documenten"
+        "SELECT id, bestandsnaam, auteur, ai_percentage, bestandsdatum, toegevoegd_op, score FROM documenten"
     ).fetchall()
     con.close()
 
-    huidige = {r[0]: r[5] for r in rijen}
+    huidige = {r[0]: r[6] for r in rijen}
 
     for _ in range(max_rondes):
         veranderd = False
-        for doc_id, naam, auteur, ai, datum, _oud in rijen:
+        for doc_id, naam, auteur, ai, datum, upload, _oud in rijen:
             d = {
                 "bestandsnaam": naam,
                 "auteur": auteur or "",
                 "ai": ai,  # None blijft None (onbekend)
                 "datum": datetime.strptime(datum, "%Y-%m-%d") if datum else None,
+                "upload": parse_upload(upload),
             }
             score, punten = bereken_score(d, doc_id)
             con = get_con()
@@ -312,18 +323,25 @@ if pagina == "upload":
             c3, c4 = st.columns(2)
             taal = c3.selectbox("Taal", TALEN, key=f"taal_{i}_{f.name}")
             land = c4.selectbox("Land", LANDEN, key=f"land_{i}_{f.name}")
-            niveaus = list(AI_NIVEAUS)
-            ai_label = st.select_slider(
-                "Hoeveel van dit document is AI-gegenereerd?",
-                options=niveaus,
-                value=niveaus[0],
-                key=f"ai_{i}_{f.name}",
-                help="Laat het op 'Weet ik niet' staan als je het niet zeker weet. "
-                     "Dan telt dit onderdeel niet mee in de betrouwbaarheidsscore.",
+            ai_onbekend = st.checkbox(
+                "❓ Ik weet het AI-percentage niet",
+                value=True,
+                key=f"ai_onb_{i}_{f.name}",
+                help="Aangevinkt: het AI-gehalte telt niet mee in de score. "
+                     "Vink uit om het zelf in te vullen.",
             )
-            ai = AI_NIVEAUS[ai_label]
-            if ai is None:
-                st.caption("ℹ️ Weet ik niet: het AI-gehalte telt niet mee in de score.")
+            if ai_onbekend:
+                ai = None
+                st.caption("ℹ️ Het AI-gehalte telt niet mee in de score.")
+            else:
+                niveaus = list(AI_NIVEAUS)
+                ai_label = st.select_slider(
+                    "Hoeveel van dit document is AI-gegenereerd?",
+                    options=niveaus,
+                    value=niveaus[0],
+                    key=f"ai_{i}_{f.name}",
+                )
+                ai = AI_NIVEAUS[ai_label]
             invoer.append((f, onderwerp, auteur, taal, land, ai))
 
     if invoer:
@@ -339,6 +357,7 @@ if pagina == "upload":
                         "bestandsnaam": f.name, "onderwerp": onderwerp.strip(), "auteur": auteur,
                         "taal": taal, "land": land, "ai": ai, "datum": datum,
                         "meta_auteur": meta_auteur, "inhoud": data,
+                        "upload": datetime.now(),
                     })
                 st.session_state.up_nr += 1  # uploader leegmaken
                 st.session_state.pagina = "beoordeel"
@@ -367,6 +386,7 @@ elif pagina == "beoordeel":
                 "Auteur": d["auteur"] or "⚠️ onbekend",
                 "Betrouwbare docs auteur": aantal_betrouwbaar(d["auteur"]),
                 "Bestandsdatum": d["datum"].strftime("%Y-%m-%d") if d["datum"] else "Onbekend",
+                "Geüpload op": d["upload"].strftime("%Y-%m-%d %H:%M"),
                 "AI %": ai_tekst(d["ai"]),
                 "Score": score,
                 "Rating": rating(score),
@@ -400,7 +420,7 @@ elif pagina == "beoordeel":
                     (
                         d["bestandsnaam"], d["onderwerp"], d["taal"], d["auteur"], d["land"], d["ai"],
                         d["datum"].strftime("%Y-%m-%d") if d["datum"] else None,
-                        datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        d["upload"].strftime("%Y-%m-%d %H:%M"),
                         score, json.dumps(punten), d["inhoud"],
                     ),
                 )
@@ -450,11 +470,12 @@ else:
 
         st.write(f"**{len(res)}** resultaat/resultaten  ·  👆 klik op een rij om het document te openen")
         event = st.dataframe(
-            res[["bestandsnaam", "onderwerp", "auteur", "taal", "land", "AI %", "score", "Rating"]],
+            res[["bestandsnaam", "onderwerp", "auteur", "taal", "land", "AI %", "toegevoegd_op", "score", "Rating"]],
             hide_index=True, use_container_width=True,
             on_select="rerun", selection_mode="single-row", key="zoektabel",
             column_config={
                 "score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%d"),
+                "toegevoegd_op": "Geüpload op",
             },
         )
 
@@ -470,6 +491,7 @@ else:
             k1.write(f"**Auteur:** {r['auteur'] or '⚠️ onbekend'}")
             k1.write(f"**AI-gehalte:** {r['AI %']}")
             k1.write(f"**Bestandsdatum:** {r['bestandsdatum'] or 'onbekend'}")
+            k1.write(f"**Geüpload op:** {r['toegevoegd_op']}")
             k2.caption("Zo is de score opgebouwd")
             k2.bar_chart(pd.Series(json.loads(r["uitleg"]), name="Punten"))
 
