@@ -2,7 +2,7 @@ import base64
 import io
 import json
 import sqlite3
-from datetime import date, datetime
+from datetime import datetime
 
 import docx
 import openpyxl
@@ -14,7 +14,14 @@ from PIL import ExifTags, Image
 st.set_page_config(page_title="Kennis Betrouwbaarheid", page_icon="🛡️", layout="wide")
 
 DB = "kennis.db"
-DREMPEL = 75  # standaardwaarde; in de zijbalk instelbaar
+DREMPEL = 75  # vanaf deze score telt een document als "betrouwbaar"
+
+# Resource limits to prevent unbounded storage and cross-user resource exhaustion
+MAX_FILES_PER_UPLOAD = 20  # Maximum files per upload batch
+MAX_FILE_SIZE_MB = 10  # Maximum size per file in MB
+MAX_BATCH_SIZE_MB = 50  # Maximum total size per upload batch in MB
+MAX_TOTAL_DOCUMENTS = 1000  # Maximum total documents in database
+MAX_DATABASE_SIZE_MB = 500  # Maximum total database size in MB
 
 # Maximale punten per factor (samen 100)
 GEWICHTEN = {
@@ -79,13 +86,11 @@ def get_con():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             bestandsnaam TEXT, onderwerp TEXT, taal TEXT, auteur TEXT, land TEXT,
             ai_percentage INTEGER, bestandsdatum TEXT, toegevoegd_op TEXT,
-            score INTEGER, uitleg TEXT, inhoud BLOB, bestandsdatum_ingevuld TEXT)"""
+            score INTEGER, uitleg TEXT, inhoud BLOB)"""
     )
     kolommen = [r[1] for r in con.execute("PRAGMA table_info(documenten)")]
     if "inhoud" not in kolommen:  # oude database bijwerken
         con.execute("ALTER TABLE documenten ADD COLUMN inhoud BLOB")
-    if "bestandsdatum_ingevuld" not in kolommen:
-        con.execute("ALTER TABLE documenten ADD COLUMN bestandsdatum_ingevuld TEXT")
     return con
 
 
@@ -93,12 +98,57 @@ def lees_database():
     con = get_con()
     df = pd.read_sql(
         """SELECT id, bestandsnaam, onderwerp, taal, auteur, land, ai_percentage,
-                  bestandsdatum, bestandsdatum_ingevuld, toegevoegd_op, score, uitleg
+                  bestandsdatum, toegevoegd_op, score, uitleg
            FROM documenten ORDER BY score DESC""",
         con,
     )
     con.close()
     return df
+
+
+def get_database_stats():
+    """Returns current database statistics for quota enforcement."""
+    con = get_con()
+    # Get document count
+    doc_count = con.execute("SELECT COUNT(*) FROM documenten").fetchone()[0]
+    # Get total size of stored BLOBs
+    total_size = con.execute("SELECT SUM(LENGTH(inhoud)) FROM documenten WHERE inhoud IS NOT NULL").fetchone()[0] or 0
+    con.close()
+    return doc_count, total_size
+
+
+def check_upload_quota(new_files_data):
+    """
+    Validates that adding new files won't exceed resource quotas.
+    Returns (is_valid, error_message).
+    """
+    # Check number of files in this batch
+    if len(new_files_data) > MAX_FILES_PER_UPLOAD:
+        return False, f"Te veel bestanden in één keer. Maximum is {MAX_FILES_PER_UPLOAD} bestanden per upload."
+    
+    # Check individual file sizes and batch total
+    batch_size = 0
+    for data in new_files_data:
+        file_size_mb = len(data) / (1024 * 1024)
+        if file_size_mb > MAX_FILE_SIZE_MB:
+            return False, f"Een bestand is te groot ({file_size_mb:.1f} MB). Maximum is {MAX_FILE_SIZE_MB} MB per bestand."
+        batch_size += len(data)
+    
+    batch_size_mb = batch_size / (1024 * 1024)
+    if batch_size_mb > MAX_BATCH_SIZE_MB:
+        return False, f"Totale grootte van upload ({batch_size_mb:.1f} MB) overschrijdt het maximum van {MAX_BATCH_SIZE_MB} MB."
+    
+    # Check database limits
+    doc_count, current_db_size = get_database_stats()
+    
+    if doc_count + len(new_files_data) > MAX_TOTAL_DOCUMENTS:
+        return False, f"Database limiet bereikt. Maximum aantal documenten is {MAX_TOTAL_DOCUMENTS}. Huidige: {doc_count}."
+    
+    projected_size_mb = (current_db_size + batch_size) / (1024 * 1024)
+    if projected_size_mb > MAX_DATABASE_SIZE_MB:
+        return False, f"Database opslaglimiet bereikt. Maximum is {MAX_DATABASE_SIZE_MB} MB. Huidige: {current_db_size / (1024 * 1024):.1f} MB."
+    
+    return True, None
 
 
 def lees_inhoud(doc_id):
@@ -197,7 +247,7 @@ def bereken_score(d, uitsluiten_id=None):
 def rating(score):
     if score >= DREMPEL:
         return "🟢 Betrouwbaar"
-    if score >= min(50, DREMPEL):
+    if score >= 50:
         return "🟠 Let op"
     return "🔴 Niet vertrouwen"
 
@@ -269,7 +319,6 @@ def toon_document(naam, data):
 st.session_state.setdefault("pagina", "upload")
 st.session_state.setdefault("wachtrij", [])
 st.session_state.setdefault("up_nr", 0)
-st.session_state.setdefault("metacache", {})
 
 df_all = lees_database()
 n_wacht = len(st.session_state.wachtrij)
@@ -295,11 +344,7 @@ with st.sidebar:
     s1.metric("In database", len(df_all))
     s2.metric("Gem. score", f"{df_all['score'].mean():.0f}" if len(df_all) else "–")
     st.caption(f"⏳ {n_wacht} document(en) in wachtrij")
-    DREMPEL = st.slider(
-        "🟢 Betrouwbaar vanaf",
-        5, 100, 75, step=5, key="drempel",
-        help="Documenten met minstens deze score krijgen een groen bolletje.",
-    )
+    st.caption(f"🟢 Betrouwbaar = score ≥ {DREMPEL}")
 
 pagina = st.session_state.pagina
 
@@ -349,55 +394,33 @@ if pagina == "upload":
                     key=f"ai_{i}_{f.name}",
                 )
                 ai = AI_NIVEAUS[ai_label]
-
-            # Bestandsdatum: voorgesteld uit het bestand zelf, anders zelf invullen
-            basis = f"{f.name}_{f.size}"
-            if basis not in st.session_state.metacache:
-                st.session_state.metacache[basis] = lees_metadata(f.name, f.getvalue())[0]
-            meta_dt = st.session_state.metacache[basis]
-            datum_in = st.date_input(
-                "Bestandsdatum (wanneer is het document laatst bewerkt?)",
-                value=meta_dt.date() if meta_dt else None,
-                min_value=date(1990, 1, 1),
-                max_value=date.today(),
-                format="DD/MM/YYYY",
-                key=f"datum_{i}_{f.name}",
-            )
-            if meta_dt and datum_in and datum_in != meta_dt.date():
-                st.caption(f"⚠️ In het bestand zelf staat {meta_dt.strftime('%d/%m/%Y')}.")
-            elif meta_dt:
-                st.caption("✨ Datum uit het bestand gelezen. Pas aan als dit niet klopt.")
-            else:
-                st.caption("✍️ Geen datum in het bestand gevonden: vul de datum zelf in.")
-            invoer.append((f, onderwerp, auteur, taal, land, ai, datum_in, meta_dt))
+            invoer.append((f, onderwerp, auteur, taal, land, ai))
 
     if invoer:
         if st.button("➡️ Doorsturen naar beoordeling", type="primary"):
-            problemen = []
-            for f, onderwerp, auteur, taal, land, ai, datum_in, meta_dt in invoer:
-                leeg = []
-                if not onderwerp.strip():
-                    leeg.append("onderwerp")
-                if datum_in is None:
-                    leeg.append("bestandsdatum")
-                if leeg:
-                    problemen.append(f"**{f.name}**: {', '.join(leeg)}")
-            if problemen:
-                st.error("Nog in te vullen:\n\n" + "\n\n".join(problemen))
+            ontbreekt = [f.name for f, o, *_ in invoer if not o.strip()]
+            if ontbreekt:
+                st.error("Vul het onderwerp in voor: " + ", ".join(ontbreekt))
             else:
-                for f, onderwerp, auteur, taal, land, ai, datum_in, meta_dt in invoer:
-                    data = f.getvalue()
-                    datum, meta_auteur = lees_metadata(f.name, data)
-                    st.session_state.wachtrij.append({
-                        "bestandsnaam": f.name, "onderwerp": onderwerp.strip(), "auteur": auteur,
-                        "taal": taal, "land": land, "ai": ai,
-                        "datum": datum,  # uit het bestand zelf: gebruikt voor de score
-                        "ingevuld": datum_in,  # ingevuld door de uploader: alleen bewaard
-                        "meta_auteur": meta_auteur, "inhoud": data, "upload": datetime.now(),
-                    })
-                st.session_state.up_nr += 1  # uploader leegmaken
-                st.session_state.pagina = "beoordeel"
-                st.rerun()
+                # Validate upload quota before adding to queue
+                new_files_data = [f.getvalue() for f, *_ in invoer]
+                is_valid, error_msg = check_upload_quota(new_files_data)
+                
+                if not is_valid:
+                    st.error(f"❌ Upload geweigerd: {error_msg}")
+                else:
+                    for f, onderwerp, auteur, taal, land, ai in invoer:
+                        data = f.getvalue()
+                        datum, meta_auteur = lees_metadata(f.name, data)
+                        st.session_state.wachtrij.append({
+                            "bestandsnaam": f.name, "onderwerp": onderwerp.strip(), "auteur": auteur,
+                            "taal": taal, "land": land, "ai": ai, "datum": datum,
+                            "meta_auteur": meta_auteur, "inhoud": data,
+                            "upload": datetime.now(),
+                        })
+                    st.session_state.up_nr += 1  # uploader leegmaken
+                    st.session_state.pagina = "beoordeel"
+                    st.rerun()
     else:
         st.info("Upload minstens één bestand om te starten.")
 
@@ -421,8 +444,7 @@ elif pagina == "beoordeel":
                 "Onderwerp": d["onderwerp"],
                 "Auteur": d["auteur"] or "⚠️ onbekend",
                 "Betrouwbare docs auteur": aantal_betrouwbaar(d["auteur"]),
-                "Bestandsdatum": d["ingevuld"].strftime("%Y-%m-%d"),
-                "Datum in bestand": d["datum"].strftime("%Y-%m-%d") if d["datum"] else "Onbekend",
+                "Bestandsdatum": d["datum"].strftime("%Y-%m-%d") if d["datum"] else "Onbekend",
                 "Geüpload op": d["upload"].strftime("%Y-%m-%d %H:%M"),
                 "AI %": ai_tekst(d["ai"]),
                 "Score": score,
@@ -447,27 +469,35 @@ elif pagina == "beoordeel":
 
         b1, b2 = st.columns(2)
         if b1.button("💾 Opslaan in database", type="primary", use_container_width=True):
-            con = get_con()
-            for d, score, punten in resultaten:
-                con.execute(
-                    """INSERT INTO documenten
-                    (bestandsnaam, onderwerp, taal, auteur, land, ai_percentage,
-                     bestandsdatum, toegevoegd_op, score, uitleg, inhoud, bestandsdatum_ingevuld)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        d["bestandsnaam"], d["onderwerp"], d["taal"], d["auteur"], d["land"], d["ai"],
-                        d["datum"].strftime("%Y-%m-%d") if d["datum"] else None,
-                        d["upload"].strftime("%Y-%m-%d %H:%M"),
-                        score, json.dumps(punten), d["inhoud"], d["ingevuld"].strftime("%Y-%m-%d"),
-                    ),
-                )
-            con.commit()
-            con.close()
-            herbereken_alles()  # oudere documenten van dezelfde auteur gaan mee omhoog/omlaag
-            st.session_state.wachtrij = []
-            st.session_state.pagina = "zoek"
-            st.balloons()
-            st.rerun()
+            # Re-validate quota at save time to prevent session manipulation or race conditions
+            files_data = [d["inhoud"] for d in wachtrij]
+            is_valid, error_msg = check_upload_quota(files_data)
+            
+            if not is_valid:
+                st.error(f"❌ Opslaan geweigerd: {error_msg}")
+                st.warning("De database limieten zijn bereikt. Verwijder oude documenten of neem contact op met de beheerder.")
+            else:
+                con = get_con()
+                for d, score, punten in resultaten:
+                    con.execute(
+                        """INSERT INTO documenten
+                        (bestandsnaam, onderwerp, taal, auteur, land, ai_percentage,
+                         bestandsdatum, toegevoegd_op, score, uitleg, inhoud)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            d["bestandsnaam"], d["onderwerp"], d["taal"], d["auteur"], d["land"], d["ai"],
+                            d["datum"].strftime("%Y-%m-%d") if d["datum"] else None,
+                            d["upload"].strftime("%Y-%m-%d %H:%M"),
+                            score, json.dumps(punten), d["inhoud"],
+                        ),
+                    )
+                con.commit()
+                con.close()
+                herbereken_alles()  # oudere documenten van dezelfde auteur gaan mee omhoog/omlaag
+                st.session_state.wachtrij = []
+                st.session_state.pagina = "zoek"
+                st.balloons()
+                st.rerun()
         if b2.button("🗑️ Wachtrij leegmaken", use_container_width=True):
             st.session_state.wachtrij = []
             st.rerun()
@@ -507,12 +537,11 @@ else:
 
         st.write(f"**{len(res)}** resultaat/resultaten  ·  👆 klik op een rij om het document te openen")
         event = st.dataframe(
-            res[["bestandsnaam", "onderwerp", "auteur", "taal", "land", "AI %", "bestandsdatum_ingevuld", "toegevoegd_op", "score", "Rating"]],
+            res[["bestandsnaam", "onderwerp", "auteur", "taal", "land", "AI %", "toegevoegd_op", "score", "Rating"]],
             hide_index=True, use_container_width=True,
             on_select="rerun", selection_mode="single-row", key="zoektabel",
             column_config={
                 "score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%d"),
-                "bestandsdatum_ingevuld": "Bestandsdatum",
                 "toegevoegd_op": "Geüpload op",
             },
         )
@@ -528,7 +557,7 @@ else:
             k1.write(f"**Onderwerp:** {r['onderwerp']}")
             k1.write(f"**Auteur:** {r['auteur'] or '⚠️ onbekend'}")
             k1.write(f"**AI-gehalte:** {r['AI %']}")
-            k1.write(f"**Bestandsdatum:** {r['bestandsdatum_ingevuld'] if pd.notna(r['bestandsdatum_ingevuld']) else 'onbekend'}")
+            k1.write(f"**Bestandsdatum:** {r['bestandsdatum'] or 'onbekend'}")
             k1.write(f"**Geüpload op:** {r['toegevoegd_op']}")
             k2.caption("Zo is de score opgebouwd")
             k2.bar_chart(pd.Series(json.loads(r["uitleg"]), name="Punten"))
