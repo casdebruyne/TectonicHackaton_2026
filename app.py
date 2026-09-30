@@ -20,7 +20,6 @@ def get_chart_data():
 
 def render_surprise_image():
     components.html(
-        """
         <div id="b" style="font-size:80px; cursor:pointer; text-align:center; user-select:none;">🎈</div>
         <div id="imageContainer"></div>
         <script>
