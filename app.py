@@ -25,9 +25,13 @@ import streamlit.components.v1 as components
 
 components.html("""
 <div id="b" style="font-size:80px; cursor:pointer; text-align:center; user-select:none;">🎈</div>
+<audio id="pop-sound" src="https://assets.mixkit.co/active_storage/sfx/2000/2000-preview.mp3"></audio>
 <script>
 const b = document.getElementById("b");
+const sound = document.getElementById("pop-sound");
 b.onclick = () => {
+  sound.currentTime = 0;
+  sound.play();
   b.textContent = "💥";
   setTimeout(() => { b.textContent = "🎈"; }, 800);
 };
