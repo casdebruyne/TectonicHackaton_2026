@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-st.title("Hello World!")
+st.title("NEW TEST TROUGH GITHUB")
 
 with st.sidebar:
     st.header("About app")
