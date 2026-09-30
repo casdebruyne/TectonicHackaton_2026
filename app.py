@@ -19,3 +19,5 @@ with col2:
 chart_data = pd.DataFrame(np.random.randn(10,3), columns=["A","B","C"])
 st.area_chart(chart_data)
 
+if st.button("🎈 Verras me!"):
+    st.balloons()
