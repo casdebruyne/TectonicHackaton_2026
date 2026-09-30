@@ -3,7 +3,14 @@ import io
 import json
 import sqlite3
 from datetime import datetime
+from datetime import datetime, timezone
 
+jaren = (datetime.now(timezone.utc) - d["datum"]).days / 365
+datum = d["datum"]
+if datum.tzinfo is None:
+    datum = datum.replace(tzinfo=timezone.utc)
+
+jaren = (datetime.now(timezone.utc) - datum).days / 365
 import docx
 import openpyxl
 import pandas as pd
