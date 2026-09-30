@@ -7,3 +7,6 @@ requests
 openpyxl
 duckdb
 joblib
+python-docx
+pypdf
+Pillow
