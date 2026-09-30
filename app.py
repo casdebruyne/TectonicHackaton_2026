@@ -55,7 +55,7 @@ with col2:
 # Random chart
 # -------------------------
 st.subheader("Area chart")
-st.area_chart(get_chart_data())
+st.line_chart(get_chart_data())
 
 # -------------------------
 # Surprise button
