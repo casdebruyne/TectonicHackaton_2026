@@ -16,6 +16,7 @@ with st.sidebar:
     st.header("About app")
     st.write("This is my first app.")
     st.write("gailly geitje")
+    st.write("##niggers niggers hate niggers")
 
 st.header("Interactive demo")
 st.markdown("This is created using `st.markdown`.")
