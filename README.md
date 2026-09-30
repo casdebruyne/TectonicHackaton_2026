@@ -45,7 +45,7 @@ The score consists of five factors with fixed weights (100 points in total). Thi
 - [Streamlit](https://streamlit.io/): interface
 - [pandas](https://pandas.pydata.org/): data processing
 - [SQLite](https://www.sqlite.org/): storage
-- pypdf, python-docx, openpyxl, Pillow: reading metadata
+- pypdf, python-docx, openpyxl
 
 ## ⚠️ Limitations
 
