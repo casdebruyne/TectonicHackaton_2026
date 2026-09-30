@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+from ml.predict import predict
 
 st.set_page_config(
     page_title="HACKATON App",
