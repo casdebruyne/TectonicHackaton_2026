@@ -7,6 +7,7 @@ st.title("HACKATON")
 with st.sidebar:
     st.header("About app")
     st.write("This is my first app.")
+    st.write("gailly geitje")
 st.header("This is a header with a divider")
 st.markdown("This is created using st.markdown")
 col1, col2 = st.columns(2)
