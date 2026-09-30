@@ -14,7 +14,7 @@ from PIL import ExifTags, Image
 st.set_page_config(page_title="Kennis Betrouwbaarheid", page_icon="🛡️", layout="wide")
 
 DB = "kennis.db"
-DREMPEL = 75  # vanaf deze score telt een document als "betrouwbaar"
+DREMPEL = 75  # standaardwaarde; in de zijbalk instelbaar
 
 # Maximale punten per factor (samen 100)
 GEWICHTEN = {
@@ -197,7 +197,7 @@ def bereken_score(d, uitsluiten_id=None):
 def rating(score):
     if score >= DREMPEL:
         return "🟢 Betrouwbaar"
-    if score >= 50:
+    if score >= min(50, DREMPEL):
         return "🟠 Let op"
     return "🔴 Niet vertrouwen"
 
@@ -295,7 +295,11 @@ with st.sidebar:
     s1.metric("In database", len(df_all))
     s2.metric("Gem. score", f"{df_all['score'].mean():.0f}" if len(df_all) else "–")
     st.caption(f"⏳ {n_wacht} document(en) in wachtrij")
-    st.caption(f"🟢 Betrouwbaar = score ≥ {DREMPEL}")
+    DREMPEL = st.slider(
+        "🟢 Betrouwbaar vanaf",
+        5, 100, 75, step=5, key="drempel",
+        help="Documenten met minstens deze score krijgen een groen bolletje.",
+    )
 
 pagina = st.session_state.pagina
 
