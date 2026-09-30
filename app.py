@@ -262,7 +262,7 @@ n_wacht = len(st.session_state.wachtrij)
 
 with st.sidebar:
     st.markdown('<div class="brand">🛡️ Kennis<br>Betrouwbaarheid</div>', unsafe_allow_html=True)
-    st.markdown('<div class="brand-sub">Vind it. Begrijp it. Vertrouw it.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="brand-sub">Vind het. Begrijp het. Vertrouw het.</div>', unsafe_allow_html=True)
 
     menu = [
         ("upload", "📤", "1 · Uploaden"),
