@@ -32,7 +32,7 @@ const player = document.getElementById("player");
 b.onclick = () => {
   b.textContent = "💥";
   setTimeout(() => { b.textContent = "🎈"; }, 800);
-  player.innerHTML = '<iframe width="300" height="170" ' +
+  player.innerHTML = '<iframe width="1920" height="1080" ' +
     'src="https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1" ' +
     'allow="autoplay; encrypted-media" frameborder="0"></iframe>';
 };
