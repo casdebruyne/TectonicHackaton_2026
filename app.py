@@ -323,7 +323,7 @@ if pagina == "upload":
             )
             ai = AI_NIVEAUS[ai_label]
             if ai is None:
-                st.caption("ℹ️ Onbekend: het AI-gehalte telt niet mee in de score.")
+                st.caption("ℹ️ Weet ik niet: het AI-gehalte telt niet mee in de score.")
             invoer.append((f, onderwerp, auteur, taal, land, ai))
 
     if invoer:
