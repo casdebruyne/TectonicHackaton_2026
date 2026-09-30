@@ -14,7 +14,7 @@ from PIL import ExifTags, Image
 st.set_page_config(page_title="Knowledge Reliability", page_icon="🛡️", layout="wide")
 
 DB = "kennis.db"
-DREMPEL = 60  # from this score onwards a document counts as "reliable"
+DREMPEL = 75  # from this score on, a document counts as "reliable"
 
 # Resource limits to prevent unbounded storage and cross-user resource exhaustion
 MAX_FILES_PER_UPLOAD = 20  # Maximum files per upload batch
@@ -23,7 +23,7 @@ MAX_BATCH_SIZE_MB = 50  # Maximum total size per upload batch in MB
 MAX_TOTAL_DOCUMENTS = 1000  # Maximum total documents in database
 MAX_DATABASE_SIZE_MB = 500  # Maximum total database size in MB
 
-# Maximum points per factor (total 100)
+# Maximum points per factor (100 in total)
 GEWICHTEN = {
     "Recency": 10,
     "Author": 30,
@@ -41,7 +41,7 @@ MIME = {
 TALEN = ["Dutch", "French", "English", "German", "Other"]
 LANDEN = ["Belgium", "Netherlands", "France", "Germany", "United Kingdom", "Other"]
 
-# AI content levels (unknown = "I don't know" checkbox, not counted in the score)
+# Levels for the AI content (unknown = "I don't know" checkbox, does not count towards the score)
 AI_NIVEAUS = {
     "0% · No AI": 0,
     "25% · Little AI": 25,
@@ -53,28 +53,6 @@ AI_NIVEAUS = {
 
 def ai_tekst(ai):
     return "Unknown" if ai is None or pd.isna(ai) else f"{int(ai)}%"
-
-
-def sanitize_csv_formula(value):
-    """
-    Neutralizes potential spreadsheet formula injection by prefixing
-    formula-leading characters with a single quote. This prevents
-    interpretation as a formula when the CSV is opened in spreadsheet software.
-    
-    Formula markers: = + - @ (and tab/carriage return which are less common)
-    """
-    if not value or not isinstance(value, str):
-        return value
-    
-    # Strip whitespace first
-    value = value.strip()
-    
-    # Check if the value starts with a formula marker
-    if value and value[0] in ('=', '+', '-', '@', '\t', '\r'):
-        # Prefix with single quote to neutralize the formula
-        return "'" + value
-    
-    return value
 
 
 # ---------------------------------------------------------------
@@ -147,7 +125,7 @@ def check_upload_quota(new_files_data):
     # Check number of files in this batch
     if len(new_files_data) > MAX_FILES_PER_UPLOAD:
         return False, f"Too many files at once. Maximum is {MAX_FILES_PER_UPLOAD} files per upload."
-    
+
     # Check individual file sizes and batch total
     batch_size = 0
     for data in new_files_data:
@@ -155,21 +133,21 @@ def check_upload_quota(new_files_data):
         if file_size_mb > MAX_FILE_SIZE_MB:
             return False, f"A file is too large ({file_size_mb:.1f} MB). Maximum is {MAX_FILE_SIZE_MB} MB per file."
         batch_size += len(data)
-    
+
     batch_size_mb = batch_size / (1024 * 1024)
     if batch_size_mb > MAX_BATCH_SIZE_MB:
         return False, f"Total upload size ({batch_size_mb:.1f} MB) exceeds the maximum of {MAX_BATCH_SIZE_MB} MB."
-    
+
     # Check database limits
     doc_count, current_db_size = get_database_stats()
-    
+
     if doc_count + len(new_files_data) > MAX_TOTAL_DOCUMENTS:
         return False, f"Database limit reached. Maximum number of documents is {MAX_TOTAL_DOCUMENTS}. Current: {doc_count}."
-    
+
     projected_size_mb = (current_db_size + batch_size) / (1024 * 1024)
     if projected_size_mb > MAX_DATABASE_SIZE_MB:
         return False, f"Database storage limit reached. Maximum is {MAX_DATABASE_SIZE_MB} MB. Current: {current_db_size / (1024 * 1024):.1f} MB."
-    
+
     return True, None
 
 
@@ -234,7 +212,7 @@ def parse_upload(tekst):
 def bereken_score(d, uitsluiten_id=None):
     f = {}
 
-    # Recency: declines slowly (halves every 5 years) and never drops below 40%.
+    # Recency: decreases slowly (halves every 5 years) and never drops below 40%.
     # Without a file date we use the upload date, but that says less (max. 50%).
     if d["datum"]:
         jaren = (datetime.now() - d["datum"]).days / 365
@@ -246,17 +224,13 @@ def bereken_score(d, uitsluiten_id=None):
         f["Recency"] = 0.3
 
     # Author: based on the number of reliable documents by this author in the database
-    # New authors without a track record receive 0 points to prevent score manipulation
     if not d["auteur"].strip():
         f["Author"] = 0.0
     else:
         n = aantal_betrouwbaar(d["auteur"], uitsluiten_id)
-        if n == 0:
-            f["Author"] = 0.0  # new author without track record: 0%
-        else:
-            f["Author"] = min(1.0, n / 5)  # from 1 reliable doc: 20%, from 5: 100%
+        f["Author"] = 0.2 + 0.8 * min(1, n / 5)  # new author 20%, from 5 reliable docs 100%
 
-    # AI percentage: unknown (None) = factor is not counted
+    # AI percentage: unknown (None) = factor does not count
     if d["ai"] is not None:
         f["AI percentage"] = 1 - d["ai"] / 100
 
@@ -274,7 +248,7 @@ def rating(score):
     if score >= DREMPEL:
         return "🟢 Reliable"
     if score >= 50:
-        return "🟠 Caution"
+        return "🟠 Be careful"
     return "🔴 Do not trust"
 
 
@@ -397,20 +371,30 @@ if pagina == "upload":
         with st.expander(f"📄 {f.name}", expanded=True):
             c1, c2 = st.columns(2)
             onderwerp = c1.text_input("Subject", key=f"onderwerp_{i}_{f.name}")
-            # Extract metadata early to show detected author (read-only)
-            data = f.getvalue()
-            datum, meta_auteur = lees_metadata(f.name, data)
-            if meta_auteur and meta_auteur.strip():
-                c2.text_input("Author (from file metadata)", value=meta_auteur, disabled=True, key=f"auteur_{i}_{f.name}")
-            else:
-                c2.caption("⚠️ No author found in file metadata")
+            auteur = c2.text_input("Author name", key=f"auteur_{i}_{f.name}")
             c3, c4 = st.columns(2)
             taal = c3.selectbox("Language", TALEN, key=f"taal_{i}_{f.name}")
             land = c4.selectbox("Country", LANDEN, key=f"land_{i}_{f.name}")
-            # AI percentage is always unknown - cannot be user-specified to prevent score manipulation
-            ai = None
-            st.caption("ℹ️ AI content is not included in the score (automatic detection not yet available).")
-            invoer.append((f, onderwerp, meta_auteur, taal, land, ai, datum, data))
+            ai_onbekend = st.checkbox(
+                "❓ I don't know the AI percentage",
+                value=True,
+                key=f"ai_onb_{i}_{f.name}",
+                help="Checked: the AI content does not count towards the score. "
+                     "Uncheck to fill it in yourself.",
+            )
+            if ai_onbekend:
+                ai = None
+                st.caption("ℹ️ The AI content does not count towards the score.")
+            else:
+                niveaus = list(AI_NIVEAUS)
+                ai_label = st.select_slider(
+                    "How much of this document is AI-generated?",
+                    options=niveaus,
+                    value=niveaus[0],
+                    key=f"ai_{i}_{f.name}",
+                )
+                ai = AI_NIVEAUS[ai_label]
+            invoer.append((f, onderwerp, auteur, taal, land, ai))
 
     if invoer:
         if st.button("➡️ Send to assessment", type="primary"):
@@ -419,22 +403,19 @@ if pagina == "upload":
                 st.error("Fill in the subject for: " + ", ".join(ontbreekt))
             else:
                 # Validate upload quota before adding to queue
-                new_files_data = [data for f, *_, data in invoer]
+                new_files_data = [f.getvalue() for f, *_ in invoer]
                 is_valid, error_msg = check_upload_quota(new_files_data)
-                
+
                 if not is_valid:
                     st.error(f"❌ Upload rejected: {error_msg}")
                 else:
-                    for f, onderwerp, auteur, taal, land, ai, datum, data in invoer:
-                        # Auteur and AI are now derived from metadata/system, not user input
-                        # This prevents score manipulation via forged author names or AI percentages
-                        # Sanitize user-controlled fields to prevent CSV formula injection
+                    for f, onderwerp, auteur, taal, land, ai in invoer:
+                        data = f.getvalue()
+                        datum, meta_auteur = lees_metadata(f.name, data)
                         st.session_state.wachtrij.append({
-                            "bestandsnaam": sanitize_csv_formula(f.name), 
-                            "onderwerp": sanitize_csv_formula(onderwerp.strip()), 
-                            "auteur": sanitize_csv_formula(auteur or ""),
+                            "bestandsnaam": f.name, "onderwerp": onderwerp.strip(), "auteur": auteur,
                             "taal": taal, "land": land, "ai": ai, "datum": datum,
-                            "meta_auteur": auteur, "inhoud": data,
+                            "meta_auteur": meta_auteur, "inhoud": data,
                             "upload": datetime.now(),
                         })
                     st.session_state.up_nr += 1  # clear the uploader
@@ -462,7 +443,7 @@ elif pagina == "beoordeel":
                 "Document": d["bestandsnaam"],
                 "Subject": d["onderwerp"],
                 "Author": d["auteur"] or "⚠️ unknown",
-                "Author's reliable docs": aantal_betrouwbaar(d["auteur"]),
+                "Reliable docs by author": aantal_betrouwbaar(d["auteur"]),
                 "File date": d["datum"].strftime("%Y-%m-%d") if d["datum"] else "Unknown",
                 "Uploaded on": d["upload"].strftime("%Y-%m-%d %H:%M"),
                 "AI %": ai_tekst(d["ai"]),
@@ -483,7 +464,7 @@ elif pagina == "beoordeel":
         c1.metric("Reliability", f"{score} / 100")
         c1.write(rating(score))
         if d["ai"] is None:
-            c1.caption("ℹ️ AI content unknown: not counted, so the other factors weigh more heavily.")
+            c1.caption("ℹ️ AI content unknown: it does not count, so the other factors weigh more heavily.")
         c2.bar_chart(pd.Series(punten, name="Points"))
 
         b1, b2 = st.columns(2)
@@ -491,9 +472,9 @@ elif pagina == "beoordeel":
             # Re-validate quota at save time to prevent session manipulation or race conditions
             files_data = [d["inhoud"] for d in wachtrij]
             is_valid, error_msg = check_upload_quota(files_data)
-            
+
             if not is_valid:
-                st.error(f"❌ Save rejected: {error_msg}")
+                st.error(f"❌ Saving rejected: {error_msg}")
                 st.warning("The database limits have been reached. Delete old documents or contact the administrator.")
             else:
                 con = get_con()
@@ -530,7 +511,7 @@ else:
     df = df_all
 
     if df.empty:
-        st.info("The database is still empty. Add documents first via pages 1 and 2.")
+        st.info("The database is still empty. Add documents via pages 1 and 2 first.")
     else:
         zoek = st.text_input("Search by subject, file name or author")
         c1, c2, c3 = st.columns(3)
@@ -598,17 +579,9 @@ else:
         if b1.button("🔄 Recalculate all scores", use_container_width=True):
             herbereken_alles()
             st.rerun()
-        
-        # Sanitize CSV export to prevent formula injection
-        # Apply sanitization to user-controlled text fields that could contain formulas
-        df_export = df.copy()
-        for col in ['bestandsnaam', 'onderwerp', 'auteur']:
-            if col in df_export.columns:
-                df_export[col] = df_export[col].apply(sanitize_csv_formula)
-        
         b2.download_button(
             "⬇️ Download database as CSV",
-            df_export.to_csv(index=False).encode("utf-8"),
+            df.to_csv(index=False).encode("utf-8"),
             file_name="kennisbank.csv", mime="text/csv",
             use_container_width=True,
         )
