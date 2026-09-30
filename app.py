@@ -142,6 +142,7 @@ def bereken_score(d, uitsluiten_id=None):
 
     # Actualiteit: daalt traag (halveert per 5 jaar) en zakt nooit onder 40%
     if d["datum"]:
+        st.write(type(d["datum"]), d["datum"])
         jaren = (datetime.now() - d["datum"]).days / 365
         f["Actualiteit"] = max(0.4, 0.5 ** (jaren / 5))
     else:
