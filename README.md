@@ -59,6 +59,7 @@ The score consists of five factors with fixed weights (100 points in total). Thi
 - Content analysis of the text (source citations, consistency)
 - User accounts and a shared database
 - Adjustable weights via the interface
+- Database which holds data more reliably
 
 ## 👥 Team
 
