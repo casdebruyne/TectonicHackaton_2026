@@ -14,7 +14,7 @@ from PIL import ExifTags, Image
 st.set_page_config(page_title="Knowledge Reliability", page_icon="🛡️", layout="wide")
 
 DB = "kennis.db"
-DREMPEL = 75  # from this score onwards a document counts as "reliable"
+DREMPEL = 60  # from this score onwards a document counts as "reliable"
 
 # Resource limits to prevent unbounded storage and cross-user resource exhaustion
 MAX_FILES_PER_UPLOAD = 20  # Maximum files per upload batch
